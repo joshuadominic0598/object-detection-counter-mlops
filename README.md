@@ -30,6 +30,44 @@ Model training happens locally with [`model_management/training/yolo_training/tr
 
 The current model detects **parking spaces** (`Car` / `Free`), but that's just configuration — the app itself doesn't know or care what it's counting. What a use case is even allowed to detect is itself config: [`model_management/config.py`](model_management/config.py) defines the required class list per use case (e.g. `carpark` -> `Car`/`Free`), and a dataset that doesn't match is refused before training ever starts.
 
+### Container runtime
+
+The runtime now uses Docker Compose for local containerized deployment. Previously, the API ran in the host's Python virtual environment and the setup script started a standalone MongoDB container. The API now runs in its own container, with the selected database's storage managed by Compose. Training, evaluation, and interactive Google Drive OAuth continue to use the host Python environment.
+
+The hexagonal architecture still defines the application's dependencies through ports and adapters. Docker and Compose define how those components run, connect, and retain data. Packaging the API's Python runtime, libraries, and system dependencies together makes local setup more consistent across machines.
+
+| File | Responsibility |
+|---|---|
+| [`Dockerfile`](Dockerfile) | Builds the Python 3.11 API image with its application and system dependencies; the local image uses CPU inference |
+| [`compose.yaml`](compose.yaml) | Defines the API and optional MongoDB service, networking, ports, persistent volumes, environment settings, and health checks |
+| [`scripts/containers.py`](scripts/containers.py) | Selects the database mode, prepares model weights, handles explicit resets, and waits for the selected stack to become healthy |
+| [`scripts/setup.sh`](scripts/setup.sh) | Delegates container setup to `containers.py`; its `--local` mode prepares `.venv` for host model workflows |
+
+`setup.sh` is still used, but `make start` calls the container helper directly:
+
+| Command | Execution flow |
+|---|---|
+| `make setup` | `setup.sh` → `containers.py setup` → prepare and start the selected container stack |
+| `make setup_local` | `setup.sh --local` → create the host virtual environment and install dependencies |
+| `make start` | `containers.py start` → reuse the API image (build if missing), prepare weights, and start the selected stack |
+| `make build` | `containers.py build` → explicitly rebuild the API image |
+| `make stop` | `containers.py stop` → stop the API and MongoDB services while retaining their volumes |
+
+The API runs in the background, so `make start` returns to the terminal after its health check succeeds. Open `http://localhost:5000/docs` to use the API, or run `docker compose logs -f api` to follow its logs. Application code and dependencies are packaged in the image: after changing them, run `make build` and then `make start`.
+
+### MongoDB and SQLite adapters
+
+[`settings.py`](counter/settings.py) reads `DATABASE_BACKEND` from `.env` and chooses matching implementations of `ObjectCountRepo`, `Monitor`, and the new `MonitoringReader` port. [`config.py`](counter/config.py) wires the storage adapters into the application. The counting use case and HTTP API use the same contracts for either database.
+
+| Backend | Count adapter | Request logging | Dashboard reads | Runtime storage |
+|---|---|---|---|---|
+| `mongodb` | [`CountMongoDBRepo`](counter/adapters/database/count_mongo_repo.py) | [`MongoMonitor`](counter/adapters/monitoring/mongo_monitor.py) | [`MongoMonitoringReader`](counter/adapters/monitoring/mongo_reader.py) | Separate MongoDB container with a persistent volume |
+| `sqlite` | [`CountSQLiteRepo`](counter/adapters/database/count_sqlite_repo.py) | [`SQLiteMonitor`](counter/adapters/monitoring/sqlite_monitor.py) | [`SQLiteMonitoringReader`](counter/adapters/monitoring/sqlite_reader.py) | Embedded database at `/data/counter.sqlite3` inside the API container, backed by a persistent volume |
+
+Both implementations provide cumulative counts by session and class, filtered count reads, and request history including success/failure details, count snapshots, and annotated-image paths. The operational dashboards read through `MonitoringReader`, so they follow the selected backend too. SQLite mode starts only the API container; it needs no separate database server.
+
+Set `DATABASE_BACKEND=sqlite` or `DATABASE_BACKEND=mongodb` in `.env`, then run `make start` to switch adapters. Each database retains its own data; switching does not migrate counts or history. The [storage port diagram](#-make-it-yours) below shows the shared interfaces and their implementations.
+
 ---
 
 ## 🚀 Quick Start
@@ -217,7 +255,7 @@ results/model_management/    performance results + training run artifacts (gitig
 | Folder | What it's for |
 |---|---|
 | `monitoring/` | Generates operational HTML dashboards from the selected database via `MonitoringReader` |
-| `scripts/` | Setup script + model downloader |
+| `scripts/` | Container lifecycle helper, setup wrapper, database reset, model downloader, and API test client |
 | `tests/` | Domain, integration, e2e, and entrypoint tests |
 | `resources/` | Sample images and static assets used in this README |
 | `results/` | Generated, not committed: API test-session captures (`scripts/api_test.py`) plus `model_management/evaluation/` and `model_management/training/` artifacts |
