@@ -1,4 +1,4 @@
-.PHONY: setup setup_local start stop test test_domain test_integration test_e2e test_entrypoints api_test e2e integration dashboard monitoring session all_tests performance_test performance_dashboard model_comparison_dashboard model_download model_download_active model_download_all model_list model_promote model_compare orchestrate train registry_reset
+.PHONY: setup setup_local start build stop test test_domain test_integration test_e2e test_entrypoints api_test e2e integration dashboard monitoring session all_tests performance_test performance_dashboard model_comparison_dashboard model_download model_download_active model_download_all model_list model_promote model_compare orchestrate train registry_reset
 
 PYTHON=.venv/bin/python
 TEST_PYTHON=python3 scripts/containers.py python
@@ -12,6 +12,9 @@ setup_local:
 
 start:
 	python3 scripts/containers.py start
+
+build:
+	python3 scripts/containers.py build
 
 stop:
 	python3 scripts/containers.py stop

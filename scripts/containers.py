@@ -18,6 +18,17 @@ def run(arguments, **kwargs):
     return subprocess.run(BASE + arguments, check=True, **kwargs)
 
 
+def image_exists(image):
+    result = subprocess.run(
+        ["docker", "image", "inspect", image], capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return True
+    if "no such image" in result.stderr.lower() or "no such object" in result.stderr.lower():
+        return False
+    raise ValueError(f"Cannot inspect the local API image: {result.stderr.strip()}")
+
+
 def main(arguments):
     if not (ROOT / ".env").exists():
         shutil.copyfile(ROOT / ".env.example", ROOT / ".env")
@@ -33,8 +44,15 @@ def main(arguments):
     if backend not in {"mongodb", "sqlite"}:
         raise ValueError("DATABASE_BACKEND must be 'mongodb' or 'sqlite'")
     profile = ["--profile", backend]
-    if command in {"setup", "start"}:
+    if command == "build":
         run(profile + ["build", "api"])
+        return
+    if command in {"setup", "start"}:
+        image = config["services"]["api"]["image"]
+        if image_exists(image):
+            print(f"Using cached API image: {image} (run make build after code changes)", flush=True)
+        else:
+            run(profile + ["build", "api"])
         for directory in ("tmp", "results", "tmp/models"):
             (ROOT / directory).mkdir(parents=True, exist_ok=True)
         if environment.get("MODEL_PATH"):
@@ -55,14 +73,14 @@ def main(arguments):
         if command == "start" and enabled("CLEAR_MODEL_REGISTRY"):
             run(profile + ["run", "--rm", "--no-deps", "api", "python", "-m",
                 "model_management.model_registry.registry", "reset", "--yes"])
-        run(profile + ["up", "-d", "--wait", "--wait-timeout", "180", "api"])
+        run(profile + ["up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "180", "api"])
         print(f"API ready using {backend}: http://localhost:{config['services']['api']['ports'][0]['published']}")
     elif command == "python":
         run(profile + ["run", "--rm", "--no-deps", "api", "python"] + arguments[1:])
     elif command == "exec":
         run(profile + ["exec", "-T", "api", "python"] + arguments[1:])
     else:
-        raise ValueError("Usage: containers.py setup|start|stop|python <args>|exec <args>")
+        raise ValueError("Usage: containers.py setup|start|build|stop|python <args>|exec <args>")
 
 
 if __name__ == "__main__":

@@ -45,12 +45,14 @@ make start
 
 That's it. `make start` will:
 
-1. Create `.env` from `.env.example` if needed and build the Python API image
+1. Create `.env` from `.env.example` if needed and reuse the local API image (build it if missing)
 2. Download the active YOLO model (or load the `MODEL_PATH` override)
 3. Start the database selected by `DATABASE_BACKEND` and wait for readiness
 4. Launch the API container at `http://localhost:5000` (`API_PORT` can override the host port)
 
 MongoDB is the default. To use SQLite, set `DATABASE_BACKEND=sqlite` in `.env` and run `make start` again. The startup helper stops the previous stack before starting the selected mode. `make stop` stops both services while preserving their data.
+
+After editing application code, the Dockerfile, or dependencies, run `make build` and then `make start`. Ordinary starts reuse the cached image without contacting Docker Hub for a rebuild. The first image build and downloads of missing database images/model weights still need network access. A Docker Hub TLS handshake timeout during `make build` is a registry connection failure; retry the build once the connection is available.
 
 Both modes persist data in separate Docker volumes. SQLite runs inside the API container because it is an [embedded database](https://www.sqlite.org/serverless.html); MongoDB runs in its own container. SQLite mode starts no MongoDB service. Switching databases preserves each database's data separately; it does not migrate counts or history between them. The older standalone `test-mongo` container is also left untouched; this Compose stack uses its own MongoDB volume and does not copy legacy container data.
 

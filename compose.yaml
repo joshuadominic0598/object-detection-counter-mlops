@@ -4,6 +4,7 @@ services:
   api:
     build: .
     image: object-counter-api:local
+    pull_policy: never
     env_file: .env
     environment:
       DATABASE_BACKEND: ${DATABASE_BACKEND:-mongodb}

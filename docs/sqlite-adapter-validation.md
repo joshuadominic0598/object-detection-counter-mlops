@@ -68,3 +68,24 @@ Local XML results and runtime snapshots are under `results/validation/`
 their volumes were retained. The older standalone `test-mongo` container and
 its data were left untouched. Existing data is not migrated between databases
 or from that legacy container into the new Compose stack.
+
+## Cached image startup fix
+
+Following a Docker Hub TLS handshake timeout during a later `make start`, the
+startup helper was changed to reuse a cached API image. It builds automatically
+only when the image is missing; `make build` explicitly rebuilds after source
+or dependency changes. API startup also disables implicit builds and image
+pulls. Initial builds and missing model/database image downloads still need
+network access.
+
+Six additional regression cases cover missing/cached image detection,
+explicit rebuilding, build failure without stopping an existing stack, and
+Docker daemon failures. The complete updated SQLite suite passed: **55 tests,
+zero failures/errors, 4.51 seconds**. Updated scripts/tests were mounted into
+the existing image for this run, so verification required no image rebuild.
+Results are in `results/validation/sqlite-startup-tests.xml` (gitignored).
+
+The actual `make start` command then succeeded with the user's `.env` selecting
+SQLite and the registry's active `yolo26_v2` model. The missing model weights
+downloaded successfully, the API reached HTTP/storage health, and the app was
+left running at `http://localhost:5000`.
