@@ -29,6 +29,13 @@ def create_app():
     count_action = config.get_count_action()
     object_list_action = config.get_object_list_action()
     monitor = RequestMonitor(config.get_monitor())
+    health_repo = config.get_repo()
+
+    @app.get("/health")
+    def health():
+        # Exercise the selected storage adapter, not just the HTTP server.
+        health_repo.read_values("__health__")
+        return {"status": "ok"}
 
     # FastAPI/Pydantic reports missing/malformed form fields as 422 by
     # default - map that back to 400 to keep the existing API contract.

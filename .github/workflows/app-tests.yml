@@ -7,10 +7,13 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database: [mongodb, sqlite]
 
     services:
       mongo:
-        image: mongo:7
+        image: ${{ matrix.database == 'mongodb' && 'mongo:7' || '' }}
         ports:
           - 27017:27017
         options: >-
@@ -20,6 +23,8 @@ jobs:
           --health-retries 5
 
     env:
+      DATABASE_BACKEND: ${{ matrix.database }}
+      SQLITE_PATH: /tmp/counter-ci.sqlite3
       MONGO_HOST: localhost
       MONGO_PORT: 27017
       MONGO_DB: counter
@@ -41,7 +46,14 @@ jobs:
         run: python -m venv .venv
 
       - name: Install dependencies
-        run: .venv/bin/python -m pip install -r requirements.txt
+        run: |
+          .venv/bin/python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          .venv/bin/python -m pip install -r requirements.txt
 
       - name: Run tests
-        run: make test
+        run: make test TEST_PYTHON=.venv/bin/python
+
+      - name: Validate container configuration
+        run: |
+          cp .env.example .env
+          docker compose --profile "${DATABASE_BACKEND}" config --quiet

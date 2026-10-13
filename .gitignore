@@ -21,6 +21,7 @@ tmp/models/
 tmp/debug/
 tmp/dashboard/
 tmp/gdrive_token.json
+tmp/sqlite/
 
 # Results and output directories
 results/

@@ -7,6 +7,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Ultralytics](https://img.shields.io/badge/YOLO-Ultralytics-00FFDE.svg?logo=yolo&logoColor=white)](https://www.ultralytics.com/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Database-47A248.svg?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
+[![SQLite](https://img.shields.io/badge/SQLite-Database-003B57.svg?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![Docker](https://img.shields.io/badge/Docker-Container-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Pytest](https://img.shields.io/badge/Tests-Pytest-0A9EDC.svg?logo=pytest&logoColor=white)](https://pytest.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-Hexagonal-6E56CF.svg)](#architecture)
@@ -29,25 +30,69 @@ Model training happens locally with [`model_management/training/yolo_training/tr
 
 The current model detects **parking spaces** (`Car` / `Free`), but that's just configuration — the app itself doesn't know or care what it's counting. What a use case is even allowed to detect is itself config: [`model_management/config.py`](model_management/config.py) defines the required class list per use case (e.g. `carpark` -> `Car`/`Free`), and a dataset that doesn't match is refused before training ever starts.
 
+### Container runtime
+
+The runtime now uses Docker Compose for local containerized deployment. Previously, the API ran in the host's Python virtual environment and the setup script started a standalone MongoDB container. The API now runs in its own container, with the selected database's storage managed by Compose. Training, evaluation, and interactive Google Drive OAuth continue to use the host Python environment.
+
+The hexagonal architecture still defines the application's dependencies through ports and adapters. Docker and Compose define how those components run, connect, and retain data. Packaging the API's Python runtime, libraries, and system dependencies together makes local setup more consistent across machines.
+
+| File | Responsibility |
+|---|---|
+| [`Dockerfile`](Dockerfile) | Builds the Python 3.11 API image with its application and system dependencies; the local image uses CPU inference |
+| [`compose.yaml`](compose.yaml) | Defines the API and optional MongoDB service, networking, ports, persistent volumes, environment settings, and health checks |
+| [`scripts/containers.py`](scripts/containers.py) | Selects the database mode, prepares model weights, handles explicit resets, and waits for the selected stack to become healthy |
+| [`scripts/setup.sh`](scripts/setup.sh) | Delegates container setup to `containers.py`; its `--local` mode prepares `.venv` for host model workflows |
+
+`setup.sh` is still used, but `make start` calls the container helper directly:
+
+| Command | Execution flow |
+|---|---|
+| `make setup` | `setup.sh` → `containers.py setup` → prepare and start the selected container stack |
+| `make setup_local` | `setup.sh --local` → create the host virtual environment and install dependencies |
+| `make start` | `containers.py start` → reuse the API image (build if missing), prepare weights, and start the selected stack |
+| `make build` | `containers.py build` → explicitly rebuild the API image |
+| `make stop` | `containers.py stop` → stop the API and MongoDB services while retaining their volumes |
+
+The API runs in the background, so `make start` returns to the terminal after its health check succeeds. Open `http://localhost:5000/docs` to use the API, or run `docker compose logs -f api` to follow its logs. Application code and dependencies are packaged in the image: after changing them, run `make build` and then `make start`.
+
+### MongoDB and SQLite adapters
+
+[`settings.py`](counter/settings.py) reads `DATABASE_BACKEND` from `.env` and chooses matching implementations of `ObjectCountRepo`, `Monitor`, and the new `MonitoringReader` port. [`config.py`](counter/config.py) wires the storage adapters into the application. The counting use case and HTTP API use the same contracts for either database.
+
+| Backend | Count adapter | Request logging | Dashboard reads | Runtime storage |
+|---|---|---|---|---|
+| `mongodb` | [`CountMongoDBRepo`](counter/adapters/database/count_mongo_repo.py) | [`MongoMonitor`](counter/adapters/monitoring/mongo_monitor.py) | [`MongoMonitoringReader`](counter/adapters/monitoring/mongo_reader.py) | Separate MongoDB container with a persistent volume |
+| `sqlite` | [`CountSQLiteRepo`](counter/adapters/database/count_sqlite_repo.py) | [`SQLiteMonitor`](counter/adapters/monitoring/sqlite_monitor.py) | [`SQLiteMonitoringReader`](counter/adapters/monitoring/sqlite_reader.py) | Embedded database at `/data/counter.sqlite3` inside the API container, backed by a persistent volume |
+
+Both implementations provide cumulative counts by session and class, filtered count reads, and request history including success/failure details, count snapshots, and annotated-image paths. The operational dashboards read through `MonitoringReader`, so they follow the selected backend too. SQLite mode starts only the API container; it needs no separate database server.
+
+Set `DATABASE_BACKEND=sqlite` or `DATABASE_BACKEND=mongodb` in `.env`, then run `make start` to switch adapters. Each database retains its own data; switching does not migrate counts or history. The [storage port diagram](#-make-it-yours) below shows the shared interfaces and their implementations.
+
 ---
 
 ## 🚀 Quick Start
 
-**Prerequisites:** Python 3.10+, Docker, Make
+**Prerequisites:** Python 3.9+ (startup helper only), Docker Desktop with Docker Compose, Make. The application runs on Python 3.11 inside its container.
 
 ```bash
 git clone <this-repo>
-cd object_detection-counter-hexagonal-mlops-architecture
+cd object-detection-counter-mlops-architecture
 
 make start
 ```
 
 That's it. `make start` will:
 
-1. Create the virtual environment and install dependencies
-2. Download the active YOLO model
-3. Spin up a MongoDB container in Docker
-4. Launch the API at `http://localhost:5000`
+1. Create `.env` from `.env.example` if needed and reuse the local API image (build it if missing)
+2. Download the active YOLO model (or load the `MODEL_PATH` override)
+3. Start the database selected by `DATABASE_BACKEND` and wait for readiness
+4. Launch the API container at `http://localhost:5000` (`API_PORT` can override the host port)
+
+MongoDB is the default. To use SQLite, set `DATABASE_BACKEND=sqlite` in `.env` and run `make start` again. The startup helper stops the previous stack before starting the selected mode. `make stop` stops both services while preserving their data.
+
+After editing application code, the Dockerfile, or dependencies, run `make build` and then `make start`. Ordinary starts reuse the cached image without contacting Docker Hub for a rebuild. The first image build and downloads of missing database images/model weights still need network access. A Docker Hub TLS handshake timeout during `make build` is a registry connection failure; retry the build once the connection is available.
+
+Both modes persist data in separate Docker volumes. SQLite runs inside the API container because it is an [embedded database](https://www.sqlite.org/serverless.html); MongoDB runs in its own container. SQLite mode starts no MongoDB service. Switching databases preserves each database's data separately; it does not migrate counts or history between them. The older standalone `test-mongo` container is also left untouched; this Compose stack uses its own MongoDB volume and does not copy legacy container data.
 
 Try it out:
 
@@ -61,7 +106,7 @@ curl -F "session_id=demo" \
 Want to send more than one image? [`scripts/api_test.py`](scripts/api_test.py) posts every image in a folder (default `resources/images/`) to `/object-detection` in one go — edit `IMAGE_DIR`, `SESSION_ID`, and `THRESHOLD` at the top of the file, then run:
 
 ```bash
-python scripts/api_test.py
+make api_test
 ```
 
 See what's happening — every request you just made is logged, so you track it by making the dashboard:
@@ -80,10 +125,29 @@ The domain layer only ever talks to **ports** (interfaces). Swap the **adapter**
 | Tomorrow you want to... | What you touch |
 |---|---|
 | Use a different model (e.g. TensorFlow instead of YOLO) | Add a new `ObjectDetector` adapter implementing `predict()`, wire it in [`config.py`](counter/config.py) |
-| Use a different database (e.g. PostgreSQL instead of MongoDB) | Add a new `ObjectCountRepo` adapter, wire it in [`config.py`](counter/config.py) |
+| Switch between MongoDB and SQLite | Set `DATABASE_BACKEND=mongodb` or `sqlite` in `.env`, then `make start` — counts, request logging, and dashboards follow the same choice |
+| Add another database (e.g. PostgreSQL) | Implement `ObjectCountRepo`, `Monitor`, and `MonitoringReader`, then wire the factories in [`settings.py`](counter/settings.py) and the container startup |
 | Detect something else entirely (people, defects, produce...) | Add a use case in [`model_management/config.py`](model_management/config.py) (its required classes), register a new model + classes in [`model_management/model_registry/registry.json`](model_management/model_registry/registry.json) — the domain never hardcodes `car`/`free` |
 
 As long as your use case is *"send a photo in, get back detected classes and counts"*, the domain code in `counter/domain/` doesn't change at all.
+
+The storage ports describe capabilities rather than database products. SQLite implements the existing `ObjectCountRepo` and `Monitor` contracts. The new `MonitoringReader` port removes MongoDB-specific reads from dashboards:
+
+```mermaid
+flowchart LR
+    Counting[CountDetectedObjects] --> Counts[ObjectCountRepo port]
+    Logging[RequestMonitor] --> Monitor[Monitor port]
+    Dashboard[Operational dashboards] --> Reader[MonitoringReader port]
+    Counts --> MongoCounts[CountMongoDBRepo]
+    Counts --> SQLiteCounts[CountSQLiteRepo]
+    Monitor --> MongoLog[MongoMonitor]
+    Monitor --> SQLiteLog[SQLiteMonitor]
+    Reader --> MongoReader[MongoMonitoringReader]
+    Reader --> SQLiteReader[SQLiteMonitoringReader]
+```
+
+Both adapters increment counts by session/class, filter reads by class, and record the same request metadata. SQLite uses a composite primary key and transactional UPSERTs; its JSON history documents preserve nested counts, optional fields, and UTC timestamps. WAL mode and a 30-second lock timeout support concurrent local writers. The Docker volume stays local to the API container; dashboards access it in that container too.
+
 
 ---
 
@@ -98,7 +162,7 @@ This is the application — everything else in the repo supports it. It's four p
 | Piece | Job |
 |---|---|
 | 🧠 **`domain/`** | The business logic — filtering by confidence, counting by class. Never imports from `adapters/` or `entrypoints/` |
-| 🔌 **`adapters/`** | Swappable implementations the domain talks to — YOLO detector, MongoDB, request monitoring |
+| 🔌 **`adapters/`** | Swappable implementations the domain talks to — YOLO detector, MongoDB/SQLite storage, request monitoring |
 | 🌐 **`entrypoints/`** | How the outside world reaches it — the FastAPI app, a CLI runner |
 | ⚙️ **`config.py`** | Wires the domain to the real adapters used by the app |
 
@@ -117,15 +181,16 @@ counter/
 │
 ├── adapters/        implementations of those interfaces
 │   ├── detection/       YOLODetector (+ a Fake one for dev/tests)
-│   ├── database/        MongoDB-backed + in-memory count repos
-│   └── monitoring/      MongoDB-backed request logging
+│   ├── database/        MongoDB + SQLite + in-memory count repos
+│   └── monitoring/      MongoDB + SQLite logging and dashboard readers
 │
 ├── entrypoints/     how the outside world reaches the domain
 │   ├── webapp.py        FastAPI app
 │   └── main.py          CLI runner
 │
 ├── monitoring/      request-level logging orchestration
-└── config.py        wires ports to adapters based on the app's runtime configuration
+├── settings.py      storage selection + factories (shared by app and dashboards)
+└── config.py        wires detection/counting actions to adapters
 ```
 
 </details>
@@ -189,8 +254,8 @@ results/model_management/    performance results + training run artifacts (gitig
 
 | Folder | What it's for |
 |---|---|
-| `monitoring/` | Generates the operational HTML dashboards from MongoDB data |
-| `scripts/` | Setup script + model downloader |
+| `monitoring/` | Generates operational HTML dashboards from the selected database via `MonitoringReader` |
+| `scripts/` | Container lifecycle helper, setup wrapper, database reset, model downloader, and API test client |
 | `tests/` | Domain, integration, e2e, and entrypoint tests |
 | `resources/` | Sample images and static assets used in this README |
 | `results/` | Generated, not committed: API test-session captures (`scripts/api_test.py`) plus `model_management/evaluation/` and `model_management/training/` artifacts |
@@ -241,7 +306,7 @@ curl -F "session_id=lot-1" -F "threshold=0.5" -F "counter=false" \
 
 </details>
 
-Every request — regardless of the `counter` flag — is logged to MongoDB (`detection_history`) for the [Monitoring](#-monitoring) dashboards below.
+Every processed detection request — regardless of the `counter` flag — is logged to the selected database (`detection_history`) for the [Monitoring](#-monitoring) dashboards below.
 
 Testing against a single image gets old fast — [`scripts/api_test.py`](scripts/api_test.py) is a configurable script that loops over every image in a folder and calls this endpoint for each one, printing status and response for all of them.
 
@@ -252,6 +317,8 @@ Testing against a single image gets old fast — [`scripts/api_test.py`](scripts
 Every model, old or new, goes through the same three steps — **train → evaluate → promote** — so no model ever skips a check or gets judged differently from another.
 
 <img src="resources/readme/model-lifecycle.png" alt="Model lifecycle diagram" width="1000" height="300">
+
+Run `make setup_local` once to prepare the host Python environment for these model workflows.
 
 > **Prerequisites — two free external accounts, both set in `.env`** (not needed just to run the API or view dashboards):
 > - **[Roboflow](https://roboflow.com)** hosts the dataset a model is trained and evaluated against — `ROBOFLOW_API_KEY`.
@@ -344,7 +411,7 @@ Model names typed anywhere (`MODEL`, `MODELS`, `MODEL_NAME`) tolerate a trailing
 
 Monitoring is the opposite concern: it doesn't care if the model is *accurate*, only whether the running API is *behaving* — request volume, errors, response times. It's built from live request logs, not ground truth.
 
-Every call to `/object-detection` is written to the `detection_history` collection in MongoDB, regardless of which model is active. The dashboards in [`monitoring/`](monitoring/) read straight from that collection, generated on demand as self-contained HTML under `tmp/dashboard/`.
+Detection requests that reach the prediction pipeline, including prediction failures, are written to `detection_history` in the selected database, regardless of which model is active. The dashboards in [`monitoring/`](monitoring/) read through the `MonitoringReader` port and are generated as self-contained HTML under `tmp/dashboard/`. `make dashboard monitoring` and `make dashboard session` execute inside the running API container, so SQLite reads use the same local volume as the application. Form validation errors retain the existing behavior and are returned before request logging.
 
 ```bash
 make dashboard monitoring   # KPIs, request volume, error rate, response times across all sessions
@@ -369,11 +436,11 @@ Regular pytest suite covering the application's own code — domain logic, datab
 | Layer | Command | What it checks |
 |---|---|---|
 | Domain | `make test_domain` | Filtering/counting rules, mocked ports — no infra needed |
-| Integration | `make test_integration` | Real MongoDB persistence |
+| Integration | `make test_integration` | Shared storage contract against the selected DB; SQLite persistence, concurrency, rollback; dashboard reads |
 | Entrypoints | `make test_entrypoints` | HTTP contract of `/object-detection`, incl. validation errors |
 | E2E | `make test_e2e` | Full pipeline: image in → API → model → DB → response |
 
-Run it all during setup:
+After `make setup` or `make start`, run the suite inside the container:
 
 ```bash
 make test
@@ -381,10 +448,13 @@ make test
 
 ### CI
 
-[`.github/workflows/app-tests.yml`](.github/workflows/app-tests.yml) runs `make test` on every push/PR via GitHub Actions — plain `ubuntu-latest`, no self-hosted runners or cloud infra. Two things the suite needs are stood up cheaply instead of used for real:
+[`.github/workflows/app-tests.yml`](.github/workflows/app-tests.yml) runs the full suite for both `mongodb` and `sqlite` in a matrix on every push/PR via GitHub Actions — plain `ubuntu-latest`, no self-hosted runners or cloud infra. The runners exercise real database persistence with isolated test databases/files:
 
-* **MongoDB** — a `mongo:7` [service container](https://docs.github.com/en/actions/using-containerized-services/about-service-containers), same as `docker run mongo` locally.
+* **MongoDB** — a `mongo:7` [service container](https://docs.github.com/en/actions/using-containerized-services/about-service-containers), enabled only for the MongoDB matrix job.
+* **SQLite** — a temporary local file using Python's built-in `sqlite3`; no database server is needed.
 * **A model** — `MODEL_PATH` is set to `yolov8n.pt`, a small COCO-pretrained model [`ultralytics`](https://www.ultralytics.com/) auto-downloads on first use. This swaps in for the registry's Google Drive-hosted weights, which need one-time interactive OAuth consent and can't be fetched non-interactively in CI. Tests only assert the API's response shape/contract, not specific classes, so the swap doesn't weaken what's being checked.
+
+Tests create separate `counter_test_*` MongoDB databases or temporary SQLite files; application data is not cleared by the test suite. CI uses a runner virtual environment with `make test TEST_PYTHON=.venv/bin/python`.
 
 ---
 
@@ -413,15 +483,26 @@ This is a solo project built to demonstrate a hexagonal MLOps architecture end-t
 Set via `.env` (created automatically from `.env.example` on first `make start`):
 
 ```env
-MONGO_HOST=localhost
-MONGO_PORT=27017
+DATABASE_BACKEND=mongodb        # mongodb or sqlite
+API_PORT=5000
+MONGO_HOST=localhost             # direct host Python runs; container uses mongo
+MONGO_PORT=27017                 # host port; container uses 27017
 MONGO_DB=counter
-MODEL_PATH=tmp/models/yolo26.pt   # optional override — otherwise uses the registry's active model
+SQLITE_PATH=tmp/sqlite/counter.sqlite3  # direct host Python runs only
+CLEAR_DATABASE_ON_START=false    # opt-in: clear selected DB during make start
+CLEAR_MONGO_DB=false             # legacy MongoDB-only reset flag
+MODEL_PATH=tmp/models/yolo26.pt   # optional; omit to use the registry's active model
 ```
 
-This repo always uses the real app wiring. If Docker or MongoDB is not available, `make start` will fail and you need to fix that on your machine before continuing.
+[`settings.py`](counter/settings.py) validates the backend and chooses the storage adapters; [`config.py`](counter/config.py) composes the use cases. The application and dashboards use the same factories. For container startup, put custom model weights under `tmp/models/` and use a container-relative `MODEL_PATH` such as `tmp/models/custom.pt`. In Docker, `SQLITE_PATH` is fixed to `/data/counter.sqlite3` on the `object-counter_sqlite_data` volume. MongoDB uses `object-counter_mongo_data`. `make start` waits for storage and HTTP health; unsupported database values fail before startup.
 
-Model management:
+For a one-run override: `DATABASE_BACKEND=sqlite make start`. Keep the choice in `.env` when using later `make test` or model-management commands. Run `make start` after editing `.env`; the running container retains its previous environment until recreated.
+
+`CLEAR_DATABASE_ON_START=true` clears counts and request history only in the selected database during `make start`. It defaults to false. Neither `make setup`, `make stop`, nor switching adapters clears data. The older `CLEAR_MONGO_DB` flag is ignored in SQLite mode. Avoid `docker compose down -v` if you want to retain the volumes.
+
+Container commands require Docker Desktop to be running. Training, evaluation, model management, and interactive Google Drive OAuth retain their host Python workflow: first run `make setup_local` with Python 3.10+ (`HOST_PYTHON=python3.11 make setup_local` to choose an interpreter). These commands use `.venv/bin/python` via the `PYTHON` Make variable. App tests default to the container; use `TEST_PYTHON=.venv/bin/python` for host tests, with host MongoDB/SQLite settings.
+
+Model management (after `make setup_local`):
 
 ```bash
 make model_list                     # see what's registered + downloaded

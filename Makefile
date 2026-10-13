@@ -1,41 +1,51 @@
-.PHONY: setup start stop test e2e integration dashboard monitoring session all_tests performance_test performance_dashboard model_comparison_dashboard model_download model_download_active model_download_all model_list model_promote model_compare orchestrate train registry_reset
+.PHONY: setup setup_local start build stop test test_domain test_integration test_e2e test_entrypoints api_test e2e integration dashboard monitoring session all_tests performance_test performance_dashboard model_comparison_dashboard model_download model_download_active model_download_all model_list model_promote model_compare orchestrate train registry_reset
 
 PYTHON=.venv/bin/python
+TEST_PYTHON=python3 scripts/containers.py python
 
 setup:
 	./scripts/setup.sh
 
+# Host environment for training, evaluation, and interactive Google Drive OAuth.
+setup_local:
+	./scripts/setup.sh --local
+
 start:
-	STARTUP_MODE=start ./scripts/setup.sh
-	ENV=prod $(PYTHON) -m counter.entrypoints.webapp
+	python3 scripts/containers.py start
+
+build:
+	python3 scripts/containers.py build
 
 stop:
-	-docker stop test-mongo
+	python3 scripts/containers.py stop
 
 
 # RUN ALL TESTS
 
 test:
-	PYTHONPATH=. $(PYTHON) -m pytest tests -v
+	PYTHONPATH=. $(TEST_PYTHON) -m pytest tests -v
 
 test_domain:
-	PYTHONPATH=. $(PYTHON) -m pytest tests/domain -v
+	PYTHONPATH=. $(TEST_PYTHON) -m pytest tests/domain -v
 
 test_integration:
-	PYTHONPATH=. $(PYTHON) -m pytest tests/integration -v
+	PYTHONPATH=. $(TEST_PYTHON) -m pytest tests/integration -v
 
 test_e2e:
-	PYTHONPATH=. $(PYTHON) -m pytest tests/e2e -v
+	PYTHONPATH=. $(TEST_PYTHON) -m pytest tests/e2e -v
 
 test_entrypoints:
-	PYTHONPATH=. $(PYTHON) -m pytest tests/entrypoints -v
+	PYTHONPATH=. $(TEST_PYTHON) -m pytest tests/entrypoints -v
+
+api_test:
+	python3 scripts/containers.py exec scripts/api_test.py
 
 dashboard:
 ifneq ($(filter monitoring,$(MAKECMDGOALS)),)
-	PYTHONPATH=. $(PYTHON) monitoring/generate_monitoring_dashboard.py
+	python3 scripts/containers.py exec monitoring/generate_monitoring_dashboard.py
 	open tmp/dashboard/monitoring_dashboard.html
 else ifneq ($(filter session,$(MAKECMDGOALS)),)
-	PYTHONPATH=. $(PYTHON) monitoring/generate_session_dashboard.py
+	python3 scripts/containers.py exec monitoring/generate_session_dashboard.py
 	open tmp/dashboard/session_dashboard.html
 else
 	@echo "Usage: make dashboard monitoring   (overall metrics)"

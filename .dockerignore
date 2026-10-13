@@ -1,0 +1,10 @@
+.git
+.env
+.venv
+__pycache__
+**/__pycache__
+.pytest_cache
+tmp
+results
+*.pt
+model_management/training/yolo_training/training_data

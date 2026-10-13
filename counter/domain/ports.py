@@ -52,3 +52,15 @@ class Monitor(ABC):
         persisted_counts: Dict[str, int] = None,
     ):
         raise NotImplementedError
+
+
+class MonitoringReader(ABC):
+    """Storage-independent access to request history and session totals."""
+
+    @abstractmethod
+    def read_requests(self) -> List[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def read_counters(self) -> List[dict]:
+        raise NotImplementedError

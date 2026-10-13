@@ -1,26 +1,18 @@
 """
-Shared config, Mongo access, and HTML helpers used by both
+Shared config, storage access, and HTML helpers used by both
 generate_monitoring_dashboard.py and generate_session_dashboard.py.
 """
 
 import base64
 import html
-import os
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
-from pymongo import MongoClient
+from counter.settings import get_monitoring_reader
 
 
 # Config
-load_dotenv()
-
 OUTPUT_DIR = "tmp/dashboard"
-
-MONGO_HOST = os.getenv("MONGO_HOST", "localhost")
-MONGO_PORT = int(os.getenv("MONGO_PORT", 27017))
-MONGO_DB = os.getenv("MONGO_DB", "prod_counter")
 
 REQUESTS_PER_PAGE = 20
 
@@ -32,14 +24,6 @@ LEGACY_ENDPOINTS = {
     "/object-count",
     "/object-list",
 }
-
-
-# Mongo connection
-client = MongoClient(MONGO_HOST, MONGO_PORT)
-database = client[MONGO_DB]
-
-detection_history_col = database.detection_history
-counter_col = database.counter
 
 
 # Chart theme
@@ -389,30 +373,7 @@ def build_session_request_pages(session_df, session_index):
 def load_requests_df():
     """Load and clean the detection history collection into a DataFrame."""
 
-    documents = list(
-        detection_history_col.find(
-            {},
-            {
-                "_id": 0,
-                "request_id": 1,
-                "session_id": 1,
-                "request_timestamp": 1,
-                "endpoint": 1,
-                "image_name": 1,
-                "threshold": 1,
-                "response_time_ms": 1,
-                "detected_count": 1,
-                "detected_classes": 1,
-                "counts": 1,
-                "status_code": 1,
-                "success": 1,
-                "error_message": 1,
-                "result_image_path": 1,
-                "counter": 1,
-                "persisted_counts": 1,
-            },
-        )
-    )
+    documents = get_monitoring_reader().read_requests()
 
     requests_df = pd.DataFrame(documents)
 
@@ -456,12 +417,7 @@ def load_requests_df():
 def load_session_counters():
     """Load persisted cumulative counts per session."""
 
-    counter_documents = list(
-        counter_col.find(
-            {},
-            {"_id": 0, "session_id": 1, "object_class": 1, "count": 1},
-        )
-    )
+    counter_documents = get_monitoring_reader().read_counters()
 
     session_counters = {}
 
