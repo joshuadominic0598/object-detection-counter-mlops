@@ -2,7 +2,7 @@
 
 **A production-oriented object detection and counting API that detects objects with bounding boxes, filters predictions by configurable confidence thresholds, and optionally tracks cumulative counts. Built with Hexagonal Architecture, keeping the core detection and counting logic independent from frameworks infrastructure, and external services - Allows for safe swaps.**
 
-[![CI](https://github.com/joshuadominic0598/object-detection-counter-mlops-architecture/actions/workflows/app-tests.yml/badge.svg)](https://github.com/joshuadominic0598/object-detection-counter-mlops-architecture/actions/workflows/app-tests.yml)
+[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF.svg?logo=githubactions&logoColor=white)](https://github.com/joshuadominic0598/object-detection-counter-mlops-architecture/actions/workflows/app-tests.yml)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Ultralytics](https://img.shields.io/badge/YOLO-Ultralytics-00FFDE.svg?logo=yolo&logoColor=white)](https://www.ultralytics.com/)
