@@ -15,6 +15,7 @@ class SQLiteMonitor(Monitor):
         detected_classes: str, counts: dict, status_code: int, success: bool,
         error_message: str = None, result_image_path: str = None,
         counter: bool = None, persisted_counts: dict = None,
+        provider: str = None,
     ):
         document = {
             "request_id": request_id,
@@ -33,6 +34,7 @@ class SQLiteMonitor(Monitor):
             "result_image_path": result_image_path,
             "counter": counter,
             "persisted_counts": persisted_counts,
+            **({"provider": provider} if provider else {}),
         }
         with self.store.connect() as connection:
             connection.execute(

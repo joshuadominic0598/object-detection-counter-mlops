@@ -177,6 +177,7 @@ def build_request_card(request):
     image_uri = image_to_base64(request.get("result_image_path"))
     success = bool(request.get("success", False))
     image_name = safe_text(request.get("image_name", "image"))
+    provider_text = safe_text(request.get("provider") or "local / legacy")
 
     if image_uri:
         image_html = f"""
@@ -259,7 +260,7 @@ def build_request_card(request):
     <div class="request-card">
         <div class="request-card-header">
             <div>
-                <div class="request-image-name">{image_name}</div>
+                <div class="request-image-name">{image_name} · {provider_text}</div>
                 <div class="request-timestamp">{format_timestamp(request.get("request_timestamp"))}</div>
             </div>
             <span class="status-badge {status_class}">{status_text}</span>

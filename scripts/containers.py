@@ -50,7 +50,7 @@ def main(arguments):
     if command in {"setup", "start"}:
         image = config["services"]["api"]["image"]
         if image_exists(image):
-            print(f"Using cached API image: {image} (run make build after code changes)", flush=True)
+            print(f"Using cached API image: {image} (runtime source is mounted; run make build after dependency changes)", flush=True)
         else:
             run(profile + ["build", "api"])
         for directory in ("tmp", "results", "tmp/models"):
@@ -74,7 +74,7 @@ def main(arguments):
             run(profile + ["run", "--rm", "--no-deps", "api", "python", "-m",
                 "model_management.model_registry.registry", "reset", "--yes"])
         run(profile + ["up", "-d", "--no-build", "--pull", "never", "--wait", "--wait-timeout", "180", "api"])
-        print(f"API ready using {backend}: http://localhost:{config['services']['api']['ports'][0]['published']}")
+        print(f"App + API ready using {backend}: http://localhost:{config['services']['api']['ports'][0]['published']} (API docs: /docs)")
     elif command == "python":
         run(profile + ["run", "--rm", "--no-deps", "api", "python"] + arguments[1:])
     elif command == "exec":

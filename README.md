@@ -1,6 +1,6 @@
 # Object Detection & Counter MLOps
 
-**A production-oriented object detection and counting API that detects objects with bounding boxes, filters predictions by configurable confidence thresholds, and optionally tracks cumulative counts. Built with Hexagonal Architecture, keeping the core detection and counting logic independent from frameworks infrastructure, and external services - Allows for safe swaps.**
+**An image detection and counting workspace with local YOLO and bring-your-own Roboflow inference, interactive bounding boxes, batches, persistent session counts, and operational dashboards. Built around replaceable detection and storage adapters.**
 
 [![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF.svg?logo=githubactions&logoColor=white)](https://github.com/joshuadominic0598/object-detection-counter-mlops-architecture/actions/workflows/app-tests.yml)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
@@ -12,7 +12,28 @@
 [![Pytest](https://img.shields.io/badge/Tests-Pytest-0A9EDC.svg?logo=pytest&logoColor=white)](https://pytest.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-Hexagonal-6E56CF.svg)](#architecture)
 
-[🏗️ Architecture](#-architecture) • [🚀 Quick Start](#-quick-start) • [🧩 Make It Yours](#-make-it-yours) • [📁 Project Structure](#-project-structure) • [📡 API](#-api) • [🤖 Model Training, Registry and Performance](#-model-training-registry-and-performance) • [🩺 Monitoring](#-monitoring) • [🧪 App Tests](#-app-tests)
+[🖥️ The App](#-the-app) • [🏗️ Architecture](#-architecture) • [🚀 Quick Start](#-quick-start) • [🧩 Make It Yours](#-make-it-yours) • [📁 Project Structure](#-project-structure) • [📡 API](#-api) • [🤖 Model Training, Registry and Performance](#-model-training-registry-and-performance) • [🩺 Monitoring](#-monitoring) • [🧪 App Tests](#-app-tests)
+
+---
+
+## 🖥️ The App
+
+**Choose a model, drop in an image, and inspect what it finds.** The browser workspace brings inference, visual inspection, counting, and monitoring together, so trying the app starts with `make start` and a browser.
+
+[![Counter front page with a completed local parking detection](resources/readme/app-workspace.png)](resources/readme/app-workspace.png)
+
+*Actual app screenshot: the local parking model finds 8 objects in an included sample. Results depend on the chosen model, image, and threshold.*
+
+| Feature | What you can do |
+|---|---|
+| **Local or cloud inference** | Use the active local YOLO model, or bring a Roboflow API key and hosted model/workflow. Test the cloud connection before running. Each model recognizes its trained classes. |
+| **Single image or Batch** | Replace one selected image by default, or choose Batch to build a queue of up to 20 images. Try the included samples or upload JPEG/PNG files with enforced size and dimension limits. |
+| **Interactive detections** | Hover, focus, or tap a bounding box to highlight the object, dim its surroundings, and see its class and confidence. Download the annotated image. |
+| **Results at a glance** | See object totals, class counts, request latency, and mean confidence for each image, plus combined batch results and failures. |
+| **Persistent session counts** | Accumulate detections across images and batches, return to a saved session, or start a new one. Counts survive app restarts with either SQLite or MongoDB. |
+| **Monitoring and investigation** | Open service-health charts and session histories from the top bar. Inspect volume, response time, errors, latency percentiles, and annotated requests for both providers. Time buckets adapt to the selected history. |
+
+Counts add detections across submissions; repeated images count again. Confidence is a model score, not measured accuracy. The training, evaluation, and promotion pipeline remains separate from this inference workspace.
 
 ---
 
@@ -53,7 +74,7 @@ The hexagonal architecture still defines the application's dependencies through 
 | `make build` | `containers.py build` → explicitly rebuild the API image |
 | `make stop` | `containers.py stop` → stop the API and MongoDB services while retaining their volumes |
 
-The API runs in the background, so `make start` returns to the terminal after its health check succeeds. Open `http://localhost:5000/docs` to use the API, or run `docker compose logs -f api` to follow its logs. Application code and dependencies are packaged in the image: after changing them, run `make build` and then `make start`.
+The API runs in the background, so `make start` returns to the terminal after its health check succeeds. Open [the workspace](http://localhost:5000) or [API docs](http://localhost:5000/docs), or run `docker compose logs -f api` to follow its logs. Runtime source, frontend assets, monitoring scripts, samples, and tests are mounted from this checkout. Run `make start` after Python changes to restart the process; refresh the browser after frontend edits. Dockerfile/dependency changes require `make build` followed by `make start`.
 
 ### MongoDB and SQLite adapters
 
@@ -86,13 +107,56 @@ That's it. `make start` will:
 1. Create `.env` from `.env.example` if needed and reuse the local API image (build it if missing)
 2. Download the active YOLO model (or load the `MODEL_PATH` override)
 3. Start the database selected by `DATABASE_BACKEND` and wait for readiness
-4. Launch the API container at `http://localhost:5000` (`API_PORT` can override the host port)
+4. Launch the frontend and API together at [http://localhost:5000](http://localhost:5000) (`API_PORT` can override the host port)
 
 MongoDB is the default. To use SQLite, set `DATABASE_BACKEND=sqlite` in `.env` and run `make start` again. The startup helper stops the previous stack before starting the selected mode. `make stop` stops both services while preserving their data.
 
-After editing application code, the Dockerfile, or dependencies, run `make build` and then `make start`. Ordinary starts reuse the cached image without contacting Docker Hub for a rebuild. The first image build and downloads of missing database images/model weights still need network access. A Docker Hub TLS handshake timeout during `make build` is a registry connection failure; retry the build once the connection is available.
+After editing Python application code, run `make start`; refresh for frontend-only changes. After editing the Dockerfile or dependencies, run `make build` and then `make start`. Ordinary starts reuse the cached image without contacting Docker Hub for a rebuild. The first image build and downloads of missing database images/model weights still need network access. A Docker Hub TLS handshake timeout during `make build` is a registry connection failure; retry the build once the connection is available.
 
 Both modes persist data in separate Docker volumes. SQLite runs inside the API container because it is an [embedded database](https://www.sqlite.org/serverless.html); MongoDB runs in its own container. SQLite mode starts no MongoDB service. Switching databases preserves each database's data separately; it does not migrate counts or history between them. The older standalone `test-mongo` container is also left untouched; this Compose stack uses its own MongoDB volume and does not copy legacy container data.
+
+### Browser workspace
+
+Open [http://localhost:5000](http://localhost:5000). No frontend build or Node installation is needed; FastAPI serves the static app and API on the same origin.
+
+1. Choose **Local model** or **Roboflow API** at the top. Local uses the active registry model. Roboflow offers **Workflow** and **Hosted detection model** modes.
+2. By default, choose **one image** from the samples or upload picker; choosing another replaces the current selection. Choose **Batch** beside **Single image** in the sidebar to add selections to an explicit queue of up to **20 images** and use the multi-file picker. Switching back to Single image keeps only the currently selected image. Set the threshold and whether to accumulate counts, then press **Run detection** or **Run batch**. Batches run sequentially; failures are shown per image and Stop finishes the current image before pausing the queue.
+3. Select a result and hover, focus, or tap a bounding box (or its object chip) to highlight it, dim the surrounding image, and inspect its class/confidence. Download the annotated result from the canvas.
+4. Review object/class counts, mean confidence, request latency (including provider round-trip, rendering and storage), and the batch summary. Confidence is the provider's score, not measured model accuracy; a zero-result image has no mean confidence.
+5. Session counters are saved in the selected database. Local and cloud start with separate session IDs, remembered in this browser. Enter an existing ID and **Load** to resume, or **New** to start fresh without deleting history. New deployments should use new sessions if their class meanings differ.
+6. Open **Monitoring** or **Sessions** from the top bar. These regenerate the existing operational dashboards from the same local and cloud request history; session request cards identify the provider.
+
+Counts are **cumulative detections across submissions**, not unique-object tracking. Submitting the same image again adds it again when accumulation is on. Failed inference and preview-only runs do not increment totals. Clearing the queue removes browser previews, not persisted counts or saved result images. Results/history remain on disk until you clean them up.
+
+### Connect Roboflow
+
+The Roboflow form opens in **Hosted detection model** mode with `parking-detection-ewm7h/3` prefilled. In **Workflow** mode, the defaults are **Parking Detection v3 Logic**, workspace `model-version2`, workflow slug `parking-detection-v3-logic`, image input `image`, and prediction output `predictions`. Paste your own API key into the UI, or set optional `ROBOFLOW_API_KEY` in your private `.env` and restart with `make start`. A blank UI key uses the configured server key; entering one overrides it for that request. UI keys stay in page memory and are never saved in browser storage, request history, or source files.
+
+The backend uses the documented Roboflow HTTP format with `Authorization: Bearer` header authentication and workflow `use_cache=true`, equivalent to the SDK's header transport. No API key appears in an upstream URL or JSON body. See [Roboflow's authentication release notes](https://github.com/roboflow/inference/releases/tag/v1.5.0) and [workflow client implementation](https://github.com/roboflow/inference/blob/main/inference_sdk/http/client.py).
+
+Workflow requests go to `https://serverless.roboflow.com/{workspace}/workflows/{workflow_slug}`. Use the slug, not the document ID. Expose a raw object-detection output containing `predictions` with `class`, `confidence`, `x`, `y`, `width`, and `height`. Change **Prediction output** for a differently named or nested output, such as `detections.cars`. Exactly one selected detection output is counted, avoiding accidental duplication of intermediate predictions. Its boxes must refer to the uploaded image (or a uniformly resized version with image dimensions), not an unreported crop/rotation.
+
+For a single hosted detection model, select **Hosted detection model** and enter `project-slug/version`. The backend sends the image to `https://detect.roboflow.com/{model_id}`. Only fixed Roboflow HTTPS origins are allowed; arbitrary URLs or self-hosted inference endpoints are not accepted. These modes support object detections, not classification-only, image-only, or arbitrary workflow outputs. Each model detects **only the classes it was trained to recognize**. The local threshold filters returned predictions; it cannot recover detections discarded by a workflow's own internal filters.
+
+In cloud mode, press **Test connection** before running detection. This verifies the selected key and deployment/output using one bundled sample inference, which may consume Roboflow credits. It does not change session totals, save result images, or add detection-history records. Run controls stay disabled until verification succeeds. Editing the key, deployment type, identifiers or workflow output requires testing again; changing the confidence threshold does not. Verification stays only in page memory and resets on reload. The top API badge reports this app's health separately. Cloud images use your account's permissions, quotas and billing; local inference runs on your machine.
+
+### Upload and local deployment boundaries
+
+- Still JPEG or PNG only; **10 MB per file**, minimum **32×32**, at most **8192 px per side** and **16 megapixels**. Animated/malformed images are rejected by content inspection, regardless of extension. Server request limits apply before multipart parsing, including requests without Content-Length.
+- The backend applies EXIF orientation and re-encodes to JPEG/RGB, stripping metadata before either provider sees the image. Boxes and previews use this same canonical image. Upload filenames are display text only; generated result names and validated session IDs prevent upload path traversal.
+- Browser requests stay on the same origin, dynamic labels use text-safe rendering, and cloud errors are sanitized before returning/logging. Inference work is serialized per app process so the shared YOLO predictor and batch counting do not race.
+- This is a **local workspace**, bound to `127.0.0.1` by default, without user accounts or session authorization. Session IDs are identifiers, not access controls. Put authentication, HTTPS, quotas and retention policies in front before exposing it to other people. Saved originals, annotated results and history are not automatically purged. Use `make stop` to stop without deleting volumes.
+
+### Send an image path from Python
+
+A dependency-free client accepts one or multiple local paths. It uploads file contents to the API; the backend never reads arbitrary client-supplied server paths or downloads image URLs.
+
+```bash
+python3 scripts/predict_image.py resources/images/carlot.jpeg --session my-local-test
+python3 scripts/predict_image.py resources/images/carlot.jpeg resources/images/carpark.jpeg --provider roboflow --session my-cloud-test
+# For another deployment (uses a UI-independent server key or ROBOFLOW_API_KEY from your shell):
+python3 scripts/predict_image.py path/to/image.jpg --provider roboflow --model your-project/3 --session another-model
+```
 
 Try it out:
 
@@ -265,9 +329,33 @@ results/model_management/    performance results + training run artifacts (gitig
 
 ## 📡 API
 
+### `POST /api/detect`
+
+The frontend's multipart endpoint returns `predictions` (pixel `xmin/ymin/xmax/ymax` boxes), per-image `counts`, persisted `total_counts`, `detection_count`, `class_count`, `mean_confidence`, `latency_ms`, dimensions, provider, request/session IDs, and original/annotated result URLs. It accepts the same core fields as `/object-detection`, plus:
+
+| Field | Default / meaning |
+|---|---|
+| `provider` | `local` or `roboflow` |
+| `api_key` | Optional request-only key; otherwise private server `ROBOFLOW_API_KEY` |
+| `roboflow_mode` | `workflow` or `model` |
+| `workspace_name` | `model-version2` |
+| `workflow_id` | `parking-detection-v3-logic` |
+| `output_path` | `predictions`; dot-separated workflow output field path |
+| `model_id` | `project-slug/version`, required in model mode |
+
+```bash
+# Uses the server's private ROBOFLOW_API_KEY; no key in shell history.
+curl -F "session_id=cloud-demo" -F "provider=roboflow" -F "counter=true" \
+     -F "file=@resources/images/carlot.jpeg" http://localhost:5000/api/detect
+```
+
+`POST /api/roboflow/test-connection` accepts the same Roboflow configuration fields (no uploaded file or session required), verifies a bundled sample, and returns `status`, `mode`, `deployment`, and `latency_ms`. This convenience endpoint does not gate scripted `/api/detect` calls; the connection-first flow is enforced by the frontend.
+
+`GET /api/sessions/{session_id}` reads persisted class totals. `GET /api/samples` lists the curated gallery. `/api/results/{session_id}/{filename}` serves generated JPEGs only. Batches are a sequence of per-image `/api/detect` requests, so each image receives its own result and monitoring record. Already-completed images are not automatically resubmitted by the browser. The CLI exits nonzero if any batch item fails.
+
 ### `POST /object-detection`
 
-One endpoint, one `counter` flag:
+The original response contract is preserved. `provider=local` is the default; Roboflow accepts the same additional fields as `/api/detect`. One `counter` flag selects the response:
 
 | `counter` | Behavior |
 |---|---|
@@ -420,6 +508,8 @@ make dashboard session      # step-by-step trace of one session, with annotated 
 
 The generated monitoring dashboards live under `tmp/dashboard/` when you run the commands above.
 
+From the browser, choose **Last hour**, **Last 24 hours**, **Last 7 days**, or **All history**. The KPIs and charts use the same selected range. Time buckets, chart height, bar width, and labels adapt to the recorded span, so a single request or a short batch is visible without a week of empty daily bars. For example, 20 calls spread across an hour use five-minute buckets. Empty intervals show zero volume and leave latency/error measurements blank; missing measurements are not treated as zero. Refresh the report after new detections. The default is All history; the command above also generates the complete history.
+
 <table>
 <tr>
 <td><img src="resources/readme/monitoring.png" width="400"><br><sub>Monitoring dashboard</sub></td>
@@ -445,6 +535,22 @@ After `make setup` or `make start`, run the suite inside the container:
 ```bash
 make test
 ```
+
+### Frontend browser tests
+
+The app still needs no Node runtime or frontend build to start. Browser testing additionally needs **Node.js 24** and **pnpm 11.25.0** (pinned in `package.json`). From the repository root:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm exec playwright install chromium
+make test_frontend
+```
+
+Playwright runs the same behavioral checks at **1440×900 desktop** and **390×844 phone** sizes. It covers single-image replacement, explicit batch mode, connection testing and invalidation, provider defaults, hosted-model/workflow form switching, request fields, file validation and queue limits, sequential batches, partial failures, stop/resume without duplicate submissions, box hover/tap/keyboard focus, downloads, session persistence, credential storage, safe label rendering, responsive layout and offline behavior.
+
+These tests start an isolated static server at `127.0.0.1:5197` and simulate API responses. They do not call Roboflow, load model weights, use application databases, or spend inference credits. Existing Python tests cover the real FastAPI, detection and storage contracts; live inference validation is recorded separately in [the validation notes](docs/frontend-feature-validation.md).
+
+Failures save screenshots and traces under ignored `test-results/`; the HTML report is under ignored `playwright-report/`. Open it with `pnpm test:frontend:report`. The CI frontend job installs Chromium and uploads this report, alongside the existing Python database matrix.
 
 ### CI
 

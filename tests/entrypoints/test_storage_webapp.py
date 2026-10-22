@@ -47,13 +47,13 @@ def test_prediction_failure_is_logged_in_selected_database(monkeypatch):
     with TestClient(create_app(), raise_server_exceptions=False) as client:
         response = client.post("/object-detection",
             data={"session_id": "failed-session", "counter": "true"},
-            files={"file": ("image.jpg", b"data", "image/jpeg")})
+            files={"file": ("image.jpg", (Path(__file__).resolve().parents[2] / "resources/images/carlot.jpeg").read_bytes(), "image/jpeg")})
     assert response.status_code == 500
     assert settings.get_repo().read_values("failed-session") == []
     rows = settings.get_monitoring_reader().read_requests()
     assert len(rows) == 1
     assert rows[0]["success"] is False
-    assert rows[0]["error_message"] == "prediction failed"
+    assert rows[0]["error_message"] == "Detection failed. Check the local model and storage configuration."
     assert rows[0]["counter"] is True
     assert rows[0]["counts"] == {}
     assert rows[0]["persisted_counts"] is None

@@ -31,3 +31,11 @@ model_management/training/yolo_training/training_data/
 model_management/evaluation/golden_dataset/eval_data.yaml
 model_management/evaluation/golden_dataset/test/labels.cache
 model_management/evaluation/golden_dataset/data.yaml
+
+# Browser verification artifacts
+tmp/frontend/
+
+# Frontend development dependencies and browser test output
+node_modules/
+playwright-report/
+test-results/

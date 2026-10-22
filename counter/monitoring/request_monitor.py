@@ -20,6 +20,7 @@ class RequestMonitor:
         result_image_path=None,
         counter=None,
         persisted_counts=None,
+        provider=None,
     ):
         self.__monitor.log_request(
             request_id=request_id,
@@ -37,6 +38,7 @@ class RequestMonitor:
             result_image_path=result_image_path,
             counter=counter,
             persisted_counts=persisted_counts,
+            **({"provider": provider} if provider else {}),
         )
 
     def log_failure(
@@ -50,6 +52,7 @@ class RequestMonitor:
         error_message,
         status_code=500,
         counter=None,
+        provider=None,
     ):
         self.__monitor.log_request(
             request_id=request_id,
@@ -67,6 +70,7 @@ class RequestMonitor:
             result_image_path=None,
             counter=counter,
             persisted_counts=None,
+            **({"provider": provider} if provider else {}),
         )
 
     @staticmethod
