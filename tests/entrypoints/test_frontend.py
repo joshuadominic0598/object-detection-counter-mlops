@@ -171,3 +171,81 @@ def test_chunked_body_limit_is_enforced_before_form_parsing(workspace):
     assert 'Content-Length' not in response.request.headers
     assert response.status_code == 413
     assert not monitor.rows
+
+
+@pytest.mark.parametrize('mode,fields,deployment',[
+    ('model',{'model_id':'parking-detection-ewm7h/3'},'parking-detection-ewm7h/3'),
+    ('workflow',{'workspace_name':'model-version2','workflow_id':'parking-detection-v3-logic'},'model-version2/parking-detection-v3-logic'),
+])
+def test_connection_probe_verifies_deployment_without_counts_history_or_files(workspace,monkeypatch,mode,fields,deployment):
+    from counter.adapters.detection.roboflow_detector import RoboflowDetector
+    seen=[]
+    def predict(self,image):
+        seen.append(self.options)
+        assert Image.open(image).format == 'JPEG'
+        return [Prediction('car',.9,Box(0,0,30,30))]
+    monkeypatch.setattr(RoboflowDetector,'predict',predict)
+    client,repo,monitor=workspace
+    submit(client)
+    before_counts=repo.read_values('frontend-test')
+    before_rows=list(monitor.rows)
+    from counter.domain import actions
+    before_files=set(Path(actions.RESULTS_DIR).rglob('*.jpg'))
+    response=client.post('/api/roboflow/test-connection',data={'api_key':'request-secret','roboflow_mode':mode,**fields})
+    assert response.status_code == 200
+    assert response.json()['status']=='connected'
+    assert response.json()['deployment']==deployment
+    assert response.json()['latency_ms']>=0
+    assert seen[0].api_key=='request-secret'
+    assert 'request-secret' not in response.text
+    assert repo.read_values('frontend-test')==before_counts
+    assert monitor.rows==before_rows
+    assert set(Path(actions.RESULTS_DIR).rglob('*.jpg'))==before_files
+
+
+@pytest.mark.parametrize('failure', ['provider','unexpected'])
+def test_connection_probe_sanitizes_failures(workspace,monkeypatch,failure):
+    from counter.adapters.detection.roboflow_detector import RoboflowDetector,RoboflowError
+    def fail(self,image):
+        if failure=='provider': raise RoboflowError('Roboflow denied access.')
+        raise RuntimeError('request-secret internal message')
+    monkeypatch.setattr(RoboflowDetector,'predict',fail)
+    client,repo,monitor=workspace
+    response=client.post('/api/roboflow/test-connection',data={'api_key':'request-secret'})
+    assert response.status_code==502
+    assert 'request-secret' not in response.text
+    assert not monitor.rows
+    assert not repo.read_values('frontend-test')
+
+
+def test_connection_probe_validates_settings_and_uses_server_key(workspace,monkeypatch):
+    from counter.adapters.detection.roboflow_detector import RoboflowDetector
+    seen=[]
+    monkeypatch.setattr(RoboflowDetector,'predict',lambda self,image:seen.append(self.options.api_key) or [])
+    client,_,monitor=workspace
+    monkeypatch.delenv('ROBOFLOW_API_KEY',raising=False)
+    assert client.post('/api/roboflow/test-connection').status_code==400
+    monkeypatch.setenv('ROBOFLOW_API_KEY','server-test-key')
+    assert client.post('/api/roboflow/test-connection',data={'model_id':'http://localhost/3'}).status_code==400
+    assert client.post('/api/roboflow/test-connection').status_code==200
+    assert seen==['server-test-key']
+    assert not monitor.rows
+
+
+def test_monitoring_time_window_is_validated_and_passed_to_generator(workspace, monkeypatch, tmp_path):
+    from counter.entrypoints import webapp
+    client, _, _ = workspace
+    commands = []
+    report_dir = tmp_path / 'tmp/dashboard'
+    report_dir.mkdir(parents=True)
+    (report_dir / 'monitoring_dashboard.html').write_text('<html>Recent calls</html>')
+    monkeypatch.setattr(webapp, 'ROOT', tmp_path)
+    monkeypatch.setattr(webapp.subprocess, 'run', lambda command, **kwargs: commands.append(command))
+    response = client.get('/dashboards/monitoring_dashboard.html?window=1h')
+    assert response.status_code == 200
+    assert response.text == '<html>Recent calls</html>'
+    assert response.headers['content-type'].startswith('text/html')
+    assert len(commands) == 1
+    assert commands[0][-2:] == ['--window', '1h']
+    assert client.get('/dashboards/monitoring_dashboard.html?window=unexpected').status_code == 400
+    assert len(commands) == 1

@@ -4,7 +4,7 @@ export const test = base.extend({
   app: async ({ page, context }, use) => {
     const api = {
       calls: [], totals: new Map(), serverKey: true, online: true,
-      failIndices: new Set(), gate: null, label: 'car',
+      failIndices: new Set(), gate: null, label: 'car', connections: [], connectionFails: false, connectionGate: null,
     };
     // Accidental external requests fail rather than reaching a paid provider.
     await context.route('**/*', route => {
@@ -23,6 +23,13 @@ export const test = base.extend({
       if (pathname.startsWith('/api/sessions/')) {
         const session_id = decodeURIComponent(pathname.split('/').pop());
         return json({ session_id, total_counts: api.totals.get(session_id) || {} });
+      }
+      if (pathname === '/api/roboflow/test-connection') {
+        const form = await new Request('http://test.local', {method: 'POST', headers: request.headers(), body: request.postDataBuffer()}).formData();
+        const fields = Object.fromEntries(form); api.connections.push(fields);
+        if (api.connectionGate) await api.connectionGate();
+        if (api.connectionFails) return json({detail: 'Roboflow denied access. Check your key and deployment permissions.'}, 502);
+        return json({status: 'connected', mode: fields.roboflow_mode, latency_ms: 42});
       }
       if (pathname !== '/api/detect') return json({ detail: 'Unexpected test API route' }, 404);
       const data = await new Request('http://test.local', {
@@ -66,9 +73,14 @@ export async function openApp(page) {
 }
 export async function sample(page, name = 'carlot') {
   await page.getByRole('button', { name: `Use sample ${name}`, exact: true }).click();
-  await expect(page.locator('#run-button')).toBeEnabled();
+  await expect(page.locator('#run-count')).not.toHaveText('0');
 }
 export async function run(page) {
   await page.locator('#run-button').click();
-  await expect(page.locator('#run-progress')).toContainText('Batch complete');
+  await expect(page.locator('#run-progress')).toContainText(/Batch complete|Detection complete/);
+}
+
+export async function verifyCloud(page) {
+  await page.locator('#test-connection').click();
+  await expect(page.locator('#cloud-status')).toHaveClass(/connected/);
 }

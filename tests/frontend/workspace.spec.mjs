@@ -1,9 +1,10 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { test, expect, openApp, sample, run } from './fixtures.mjs';
+import { test, expect, openApp, sample, run, verifyCloud } from './fixtures.mjs';
 
 const carlot = resolve(import.meta.dirname, '../../resources/images/carlot.jpeg');
 async function uploads(page, number) {
+  if(number > 1) await page.locator('#batch-mode').check();
   const buffer = await readFile(carlot);
   await page.locator('#file-input').setInputFiles(Array.from({ length: number }, (_, index) => ({
     name: `batch-${index + 1}.jpg`, mimeType: 'image/jpeg', buffer,
@@ -128,11 +129,12 @@ test('preview-only inference does not increment totals and sessions survive relo
 test('routes hosted-model and workflow requests explicitly and keeps keys out of storage', async ({ page, app }) => {
   app.serverKey = false;
   await openApp(page); await page.locator('#roboflow-tab').click(); await sample(page);
-  await page.locator('#run-button').click();
+  await expect(page.locator('#run-button')).toBeDisabled();
+  await page.locator('#test-connection').click();
   await expect(page.locator('#notice')).toContainText('Enter your Roboflow API key');
   expect(app.calls).toHaveLength(0);
   await page.locator('#api-key').fill('synthetic-test-key');
-  await run(page);
+  await verifyCloud(page); await run(page);
   expect(app.calls[0]).toMatchObject({ provider: 'roboflow', roboflow_mode: 'model', model_id: 'parking-detection-ewm7h/3', api_key: 'synthetic-test-key' });
   await expect(page.locator('#cloud-status')).toHaveClass(/connected/);
   await page.locator('#roboflow-mode').selectOption('workflow');
@@ -140,7 +142,10 @@ test('routes hosted-model and workflow requests explicitly and keeps keys out of
   await expect(page.locator('#model-field')).toBeHidden();
   await expect(page.locator('#cloud-status')).not.toHaveClass(/connected/);
   await page.locator('#output-path').fill('detections.cars');
-  await sample(page); await run(page);
+  await expect(page.locator('#run-button')).toBeDisabled();
+  await verifyCloud(page); await sample(page); await run(page);
+  expect(app.connections).toHaveLength(2);
+  expect(app.connections[1]).toMatchObject({roboflow_mode: 'workflow', output_path: 'detections.cars'});
   expect(app.calls[1]).toMatchObject({ roboflow_mode: 'workflow', workspace_name: 'model-version2', workflow_id: 'parking-detection-v3-logic', output_path: 'detections.cars' });
   const storage = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
   expect(storage).not.toContain('synthetic-test-key');
@@ -156,7 +161,7 @@ test('keeps provider sessions separate and resumes their respective counts', asy
   const cloud = await page.locator('#session-id').inputValue();
   expect(cloud).not.toBe(local);
   await expect(page.locator('#persistent-total')).toHaveText('0');
-  await sample(page); await run(page);
+  await verifyCloud(page); await sample(page); await run(page);
   expect(app.calls[1]).toMatchObject({ session_id: cloud, roboflow_mode: 'model', api_key: '' });
   await page.locator('#local-tab').click();
   await expect(page.locator('#session-id')).toHaveValue(local);
@@ -226,4 +231,81 @@ test('opens monitoring and sessions in separate tabs and disables runs while off
   await expect(page.locator('.queue-item')).toHaveCount(1);
   await expect(page.locator('#run-button')).toBeDisabled();
   expect(app.calls).toHaveLength(0);
+});
+
+
+test('single-image mode replaces selections and keeps persistent counts across runs', async ({ page, app }) => {
+  await openApp(page);
+  await expect(page.getByRole('radio', {name: 'Single image', exact: true})).toBeChecked();
+  await expect(page.getByRole('radio', {name: 'Batch', exact: true})).not.toBeChecked();
+  await expect(page.locator('#file-input')).not.toHaveAttribute('multiple');
+  await expect(page.locator('#queue-panel')).toBeHidden();
+  await sample(page, 'carlot'); await sample(page, 'carpark3');
+  await expect(page.locator('.queue-item')).toHaveCount(1);
+  await expect(page.locator('#queue-count')).toHaveText('1 / 1');
+  await expect(page.locator('#image-caption')).toContainText('carpark3.png');
+  await run(page);
+  expect(app.calls.map(item => item.file_name)).toEqual(['carpark3.png']);
+  await sample(page, 'carlot'); await run(page);
+  expect(app.calls.map(item => item.file_name)).toEqual(['carpark3.png', 'carlot.jpeg']);
+  await expect(page.locator('#persistent-total')).toHaveText('4');
+  await expect(page.locator('.queue-item')).toHaveCount(1);
+});
+
+test('batch mode explicitly adds samples and switching back keeps only the selected image', async ({ page, app }) => {
+  await openApp(page); await page.locator('#batch-mode').check();
+  await expect(page.locator('#file-input')).toHaveAttribute('multiple', '');
+  await expect(page.locator('#queue-panel')).toBeVisible();
+  await expect(page.locator('#upload-heading')).toHaveText('Add images to your batch');
+  await sample(page, 'carlot'); await sample(page, 'carpark3');
+  await expect(page.locator('.queue-item')).toHaveCount(2);
+  await expect(page.locator('#run-label')).toHaveText('Run batch');
+  await page.locator('#single-mode').check();
+  await expect(page.locator('.queue-item')).toHaveCount(1);
+  await expect(page.locator('#queue-panel')).toBeHidden();
+  await expect(page.locator('#image-caption')).toContainText('carpark3.png');
+  await run(page);
+  expect(app.calls.map(item => item.file_name)).toEqual(['carpark3.png']);
+});
+
+test('connection checking gates cloud runs and edits require another verification', async ({ page, app }) => {
+  await openApp(page); await page.locator('#roboflow-tab').click(); await sample(page);
+  await expect(page.locator('#run-button')).toBeDisabled();
+  await verifyCloud(page);
+  expect(app.calls).toHaveLength(0);
+  expect(app.connections[0]).toMatchObject({roboflow_mode: 'model', model_id: 'parking-detection-ewm7h/3', api_key: ''});
+  await expect(page.locator('#persistent-total')).toHaveText('0');
+  await expect(page.locator('#run-button')).toBeEnabled();
+  await page.locator('#model-id').fill('another-model/2');
+  await expect(page.locator('#cloud-status')).not.toHaveClass(/connected/);
+  await expect(page.locator('#run-button')).toBeDisabled();
+  await verifyCloud(page); await run(page);
+  expect(app.calls[0].model_id).toBe('another-model/2');
+  await page.locator('#api-key').fill('changed-key');
+  await expect(page.locator('#cloud-status')).not.toHaveClass(/connected/);
+  await expect(page.locator('#run-button')).toBeDisabled();
+  await page.reload(); await page.locator('#roboflow-tab').click();
+  await expect(page.locator('#cloud-status')).not.toHaveClass(/connected/);
+});
+
+test('failed connection stays blocked and checking locks configuration and uploads', async ({ page, app }) => {
+  app.connectionFails = true;
+  await openApp(page); await page.locator('#roboflow-tab').click(); await sample(page);
+  await page.locator('#test-connection').click();
+  await expect(page.locator('#cloud-status')).toContainText('Connection failed');
+  await expect(page.locator('#notice')).toContainText('Roboflow denied access');
+  await expect(page.locator('#run-button')).toBeDisabled();
+  expect(app.calls).toHaveLength(0);
+  app.connectionFails = false;
+  let release; app.connectionGate = () => new Promise(resolve => {release = resolve;});
+  await page.locator('#test-connection').click();
+  await expect.poll(() => app.connections.length).toBe(2);
+  await expect(page.locator('#model-id')).toBeDisabled();
+  await expect(page.locator('#api-key')).toBeDisabled();
+  await expect(page.locator('#batch-mode')).toBeDisabled();
+  await expect(page.locator('#dropzone')).toBeDisabled();
+  await expect(page.locator('#test-connection')).toHaveText('Testing…');
+  release();
+  await expect(page.locator('#cloud-status')).toHaveClass(/connected/);
+  await expect(page.locator('#run-button')).toBeEnabled();
 });

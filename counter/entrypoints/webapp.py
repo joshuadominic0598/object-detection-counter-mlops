@@ -7,7 +7,7 @@ import time
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -107,21 +107,26 @@ def create_app():
         validate_session(session_id)
         return {"session_id": session_id, "total_counts": {v.object_class: v.count for v in repo.read_values(session_id)}}
 
-    def generate_dashboards():
+    def generate_dashboard(filename, window):
         with dashboard_lock:
-            for script in ("generate_monitoring_dashboard.py", "generate_session_dashboard.py"):
-                try:
-                    subprocess.run([sys.executable, str(ROOT / "monitoring" / script)], cwd=ROOT,
-                                   capture_output=True, check=True, timeout=60)
-                except (subprocess.SubprocessError, OSError):
-                    raise HTTPException(503, "Dashboard generation failed. Check storage and retry.") from None
+            script = "generate_monitoring_dashboard.py" if filename == "monitoring_dashboard.html" else "generate_session_dashboard.py"
+            arguments = ["--window", window] if filename == "monitoring_dashboard.html" else []
+            try:
+                subprocess.run([sys.executable, str(ROOT / "monitoring" / script), *arguments], cwd=ROOT,
+                               capture_output=True, check=True, timeout=60)
+                # Read while locked so simultaneous requests for different windows
+                # cannot serve each other's generated report.
+                return (ROOT / "tmp/dashboard" / filename).read_bytes()
+            except (subprocess.SubprocessError, OSError):
+                raise HTTPException(503, "Dashboard generation failed. Check storage and retry.") from None
 
     @app.get("/dashboards/{filename}")
-    def dashboard(filename: str):
+    def dashboard(filename: str, window: str = "all"):
         if filename not in {"monitoring_dashboard.html", "session_dashboard.html"}:
             raise HTTPException(404, "Dashboard not found.")
-        generate_dashboards()
-        return FileResponse(ROOT / "tmp/dashboard" / filename)
+        if window not in {"all", "1h", "24h", "7d"}:
+            raise HTTPException(400, "Choose a valid monitoring time range.")
+        return Response(generate_dashboard(filename, window), media_type="text/html")
 
     @app.post("/api/roboflow/test-connection")
     def test_roboflow_connection(

@@ -10,6 +10,7 @@ from helpers import apply_chart_theme, empty_dashboard_html, format_timestamp, l
 OUTPUT_FILENAME = "monitoring_dashboard.html"
 LATEST_SESSION_COUNT = 5
 MAX_SESSION_COUNT = 20
+HISTORY_WINDOWS = {"1h": "Last hour", "24h": "Last 24 hours", "7d": "Last 7 days", "all": "All history"}
 
 
 def _is_missing(value):
@@ -55,13 +56,10 @@ def _bar_text(values):
     return [f"{int(value):,}" if pd.notna(value) else "" for value in values]
 
 
-def _style_bar_chart(fig, text_values):
-    fig.update_traces(
-        text=text_values,
-        textposition="outside",
-        marker_line_width=4,
-        marker_line_color="rgba(255, 255, 255, 0.28)",
-    )
+def _style_bar_chart(fig):
+    for trace in fig.data:
+        trace.update(text=_bar_text(trace.y), textposition="outside", cliponaxis=False,
+                     marker_line_width=1, marker_line_color="rgba(255, 255, 255, 0.28)")
     fig.update_layout(bargap=0.2, bargroupgap=0.08)
     return fig
 
@@ -142,71 +140,93 @@ def build_session_summary(requests_df):
     return session_summary.sort_values("last_request", ascending=False)
 
 
+def _time_bucket(span):
+    """Keep the complete history readable in at most about 40 time buckets."""
+    for frequency, seconds, label in [
+        ("1s", 1, "1 second"), ("5s", 5, "5 seconds"), ("15s", 15, "15 seconds"),
+        ("30s", 30, "30 seconds"), ("1min", 60, "1 minute"),
+        ("5min", 300, "5 minutes"), ("15min", 900, "15 minutes"),
+        ("30min", 1800, "30 minutes"), ("1h", 3600, "1 hour"),
+        ("3h", 10800, "3 hours"), ("6h", 21600, "6 hours"),
+        ("12h", 43200, "12 hours"), ("1D", 86400, "1 day"),
+    ]:
+        if span.total_seconds() / seconds <= 40:
+            return frequency, pd.Timedelta(seconds=seconds), label
+    days = max(2, int(span.total_seconds() / (86400 * 40)) + 1)
+    return f"{days}D", pd.Timedelta(days=days), f"{days} days"
+
+
 def _build_time_series(requests_df):
     timestamped_df = requests_df[requests_df["request_timestamp"].notna()].copy()
 
     if timestamped_df.empty:
         return {}, pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    timeline = timestamped_df.set_index("request_timestamp")
-    day_index = pd.date_range(
-        start=timeline.index.min().normalize(),
-        end=timeline.index.max().normalize(),
-        freq="D",
-    )
-    if len(day_index) > 8:
-        day_index = day_index[-8:]
-
-    daily_timeline = timeline.loc[day_index.min() : day_index.max()]
-
-    request_volume_df = (
-        daily_timeline.resample("D").size().reindex(day_index, fill_value=0).rename_axis("request_timestamp").reset_index(name="requests")
-    )
-    response_time_df = (
-        daily_timeline["response_time_ms"]
-        .resample("D")
-        .mean()
-        .reindex(day_index)
-        .rename_axis("request_timestamp")
-        .reset_index(name="response_time_ms")
-    )
-    error_rate_df = (
-        daily_timeline["success"]
-        .resample("D")
-        .apply(lambda series: (1 - series.mean()) * 100)
-        .reindex(day_index)
-        .rename_axis("request_timestamp")
-        .reset_index(name="error_rate")
-    )
-
-    p50_df = (
-        daily_timeline["response_time_ms"]
-        .resample("D")
-        .quantile(0.50)
-        .reindex(day_index)
-        .rename_axis("request_timestamp")
-        .reset_index(name="p50")
-    )
-    p95_df = (
-        daily_timeline["response_time_ms"]
-        .resample("D")
-        .quantile(0.95)
-        .reindex(day_index)
-        .rename_axis("request_timestamp")
-        .reset_index(name="p95")
-    )
-    p99_df = (
-        daily_timeline["response_time_ms"]
-        .resample("D")
-        .quantile(0.99)
-        .reindex(day_index)
-        .rename_axis("request_timestamp")
-        .reset_index(name="p99")
-    )
-
-    latency_df = p50_df.merge(p95_df, on="request_timestamp", how="outer").merge(p99_df, on="request_timestamp", how="outer")
+    timeline = timestamped_df.set_index("request_timestamp").sort_index()
+    frequency, width, label = _time_bucket(timeline.index.max() - timeline.index.min())
+    timeline.attrs.update(bucket_width=width, bucket_label=label, frequency=frequency)
+    # Resample the records themselves: slicing at the final day's midnight
+    # excluded every request later that day (including all single-day runs).
+    grouped = timeline.resample(frequency)
+    request_volume_df = grouped.size().reset_index(name="requests")
+    response_time_df = grouped["response_time_ms"].mean().reset_index()
+    error_rate_df = ((1 - grouped["success"].mean()) * 100).reset_index(name="error_rate")
+    latency_df = pd.concat(
+        [grouped["response_time_ms"].quantile(q).rename(name)
+         for q, name in [(0.50, "p50"), (0.95, "p95"), (0.99, "p99")]], axis=1,
+    ).reset_index()
 
     return timeline, request_volume_df, response_time_df, error_rate_df, latency_df
+
+
+def _style_service_charts(charts, timeline, volume):
+    width = timeline.attrs["bucket_width"]
+    bucket_count = len(volume)
+    tick_format = "%H:%M:%S" if width < pd.Timedelta(minutes=1) else (
+        "%H:%M<br>%b %d" if width < pd.Timedelta(days=1) else "%b %d<br>%Y"
+    )
+    for fig in charts:
+        fig.update_layout(
+            height=300 if bucket_count <= 12 else 340 if bucket_count <= 30 else 380,
+            autosize=True, margin=dict(l=60, r=24, t=65, b=65),
+            xaxis_title=f"Time (UTC) · {timeline.attrs['bucket_label']} per bucket",
+            hovermode="x unified", legend=dict(orientation="h", y=1.1, x=0),
+        )
+        fig.update_xaxes(
+            range=[volume["request_timestamp"].min() - width * 0.65,
+                   volume["request_timestamp"].max() + width * 0.65],
+            tickformat=tick_format, nticks=5,
+            hoverformat="%Y-%m-%d %H:%M:%S UTC",
+        )
+        fig.update_yaxes(rangemode="tozero", fixedrange=False)
+        for trace in fig.data:
+            if trace.type == "bar":
+                trace.width = width.total_seconds() * 1000 * (0.24 if len(fig.data) > 1 else 0.7)
+                if bucket_count > 12 or (len(fig.data) > 1 and bucket_count > 3):
+                    trace.text = None
+    charts[0].update_yaxes(dtick=1 if volume["requests"].max() <= 5 else None)
+    # A 0% error rate is valid data. Keep its markers above the axis baseline.
+    measured_errors = pd.Series(charts[2].data[0].y).dropna() if charts[2].data else pd.Series(dtype=float)
+    charts[2].update_yaxes(range=[-2, max(5, measured_errors.max() * 1.1)] if not measured_errors.empty else None,
+                          tickvals=[0, 1, 2, 3, 4, 5] if not measured_errors.empty and measured_errors.max() == 0 else None)
+    for fig in (charts[1], charts[3]):
+        if not fig.data or not any(pd.notna(value) for trace in fig.data for value in trace.y):
+            fig.add_annotation(x=0.5, y=0.5, xref="paper", yref="paper",
+                               text="Requests recorded without latency measurements", showarrow=False)
+
+
+def _service_history_description(requests_df):
+    timestamps = requests_df["request_timestamp"].dropna()
+    if timestamps.empty:
+        return "No valid request timestamps are available."
+    _, _, label = _time_bucket(timestamps.max() - timestamps.min())
+    description = (f"{len(timestamps):,} calls · {format_timestamp(timestamps.min())} to "
+                   f"{format_timestamp(timestamps.max())} · {label} per bucket. "
+                   "Empty intervals have no latency or error-rate measurement.")
+    missing = len(requests_df) - len(timestamps)
+    if missing:
+        description += f" {missing:,} records without valid timestamps are excluded from time charts."
+    return description
 
 
 def build_charts(requests_df):
@@ -229,13 +249,13 @@ def build_charts(requests_df):
         px.bar(request_volume_df, x="request_timestamp", y="requests", title="Request Volume")
     )
     request_volume_fig.update_layout(xaxis_title="Day", yaxis_title="Requests", hovermode="x unified")
-    _style_bar_chart(request_volume_fig, _bar_text(request_volume_df["requests"]))
+    _style_bar_chart(request_volume_fig)
 
     response_time_fig = apply_chart_theme(
         px.bar(response_time_df, x="request_timestamp", y="response_time_ms", title="Response Time")
     )
     response_time_fig.update_layout(xaxis_title="Day", yaxis_title="Milliseconds", hovermode="x unified")
-    _style_bar_chart(response_time_fig, _bar_text(response_time_df["response_time_ms"]))
+    _style_bar_chart(response_time_fig)
 
     error_rate_fig = apply_chart_theme(
         px.line(
@@ -271,9 +291,10 @@ def build_charts(requests_df):
         )
     )
     latency_percentiles_fig.update_layout(xaxis_title="Day", yaxis_title="Milliseconds", hovermode="x unified")
-    _style_bar_chart(
-        latency_percentiles_fig,
-        latency_long_df["latency_ms"].map(lambda value: "" if pd.isna(value) else f"{value:.0f}"),
+    _style_bar_chart(latency_percentiles_fig)
+    _style_service_charts(
+        [request_volume_fig, response_time_fig, error_rate_fig, latency_percentiles_fig],
+        timeline, request_volume_df,
     )
 
     if class_counts_df.empty:
@@ -291,7 +312,7 @@ def build_charts(requests_df):
         class_distribution_df = (
             class_counts_df.set_index("request_timestamp")
             .groupby("class_name")["count"]
-            .resample("1h")
+            .resample(timeline.attrs["frequency"])
             .sum()
             .reset_index()
         )
@@ -308,7 +329,7 @@ def build_charts(requests_df):
                 title="Class Distribution Over Time",
             )
         )
-        class_distribution_fig.update_layout(xaxis_title="Time", yaxis_title="Detections", hovermode="x unified")
+        class_distribution_fig.update_layout(xaxis_title="Time (UTC)", yaxis_title="Detections", hovermode="x unified")
         class_distribution_fig.update_traces(mode="lines+markers", line=dict(width=4), marker=dict(size=10))
 
     outcome_df = requests_df.assign(
@@ -615,6 +636,13 @@ body {
     margin-top: 22px;
 }
 
+nav.hero-meta a { text-decoration: none; }
+nav.hero-meta a[aria-current="page"] {
+    color: var(--text);
+    border-color: var(--accent);
+    background: rgba(56, 189, 248, 0.18);
+}
+
 .hero-badge {
     padding: 10px 14px;
     border-radius: 14px;
@@ -713,6 +741,8 @@ body {
     border: 1px solid var(--border);
     background: var(--surface);
 }
+
+.service-chart { padding: 8px; }
 
 .chart-card.full-width {
     grid-column: 1 / -1;
@@ -971,14 +1001,30 @@ body {
 """
 
 
-def generate_dashboard():
+def _history_controls(window):
+    links = []
+    for value, label in HISTORY_WINDOWS.items():
+        current = ' aria-current="page"' if value == window else ""
+        links.append(f'<a class="hero-badge" href="monitoring_dashboard.html?window={value}"{current}>{label}</a>')
+    return '<nav class="hero-meta" aria-label="Monitoring time range">' + "".join(links) + '</nav>'
+
+
+def generate_dashboard(window="all", now=None):
+    if window not in HISTORY_WINDOWS:
+        raise ValueError("Unknown monitoring time window")
     requests_df = load_requests_df()
+    if window != "all" and not requests_df.empty:
+        end = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+        requests_df = requests_df[requests_df["request_timestamp"].between(end - pd.Timedelta(window), end)].copy()
+    history_controls = _history_controls(window)
 
     if requests_df.empty:
         html_output = empty_dashboard_html(
             "Object Detection Monitoring",
-            "No request history is available yet.",
+            "No detection calls in this time range. Run detection or choose a wider range.",
         )
+        html_output = html_output.replace("</body>", history_controls + "</body>")
+        html_output = html_output.replace("</head>", f'<meta name="viewport" content="width=device-width, initial-scale=1.0"><style>{CSS}</style></head>')
         return write_dashboard(OUTPUT_FILENAME, html_output)
 
     metrics = {
@@ -997,6 +1043,7 @@ def generate_dashboard():
 
     zero_result_df = _build_zero_result_requests(requests_df)
     charts = build_charts(requests_df)
+    service_history_description = _service_history_description(requests_df)
     session_summary = build_session_summary(requests_df)
     latest_sessions_html = _build_latest_sessions_cards(session_summary)
     sessions_section_html = _build_sessions_section(session_summary)
@@ -1031,13 +1078,14 @@ def generate_dashboard():
             <h1>Object Detection Monitoring</h1>
             <p class="subtitle">
                 Live service health, model behavior, and session investigation in one dashboard.
-                The dashboard only reflects annotated debug images and request telemetry produced by the single API route.
+                Includes local and Roboflow detection requests from the app and API. Refresh to load new calls.
             </p>
             <div class="hero-meta">
-                <div class="hero-badge">Current route: /object-detection</div>
+                <div class="hero-badge">Routes: /api/detect and /object-detection</div>
                 <div class="hero-badge">Annotated images: results/&lt;session_id&gt;/</div>
                 <div class="hero-badge">Investigate details in session_dashboard.html</div>
             </div>
+            {history_controls}
         </div>
     </section>
 
@@ -1053,14 +1101,14 @@ def generate_dashboard():
         <div class="panel-head">
             <div>
                 <h2 class="section-title">Service Health</h2>
-                <p class="section-description">Request volume, response time, errors, and latency percentiles.</p>
+                <p class="section-description">{service_history_description}</p>
             </div>
         </div>
         <div class="chart-grid">
-            <div class="chart-card">{request_volume_chart_html}</div>
-            <div class="chart-card">{response_time_chart_html}</div>
-            <div class="chart-card">{error_rate_chart_html}</div>
-            <div class="chart-card">{latency_percentiles_chart_html}</div>
+            <div class="chart-card service-chart">{request_volume_chart_html}</div>
+            <div class="chart-card service-chart">{response_time_chart_html}</div>
+            <div class="chart-card service-chart">{error_rate_chart_html}</div>
+            <div class="chart-card service-chart">{latency_percentiles_chart_html}</div>
         </div>
     </section>
 
@@ -1129,4 +1177,7 @@ document.addEventListener('DOMContentLoaded', () => {{
 
 
 if __name__ == "__main__":
-    generate_dashboard()
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--window", choices=HISTORY_WINDOWS, default="all")
+    generate_dashboard(window=parser.parse_args().window)

@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {provider: 'local', queue: [], selected: null, busy: false, stop: false, serverKey: false, connected: false, activeBox: null};
+const state = {provider: 'local', queue: [], selected: null, busy: false, stop: false, serverKey: false, connected: false, activeBox: null, batch: false, testing: false, cloudVerified: false, selectionVersion: 0};
 const palette = ['#c298ff', '#6ee7b7', '#7dd3fc', '#fbbf72', '#f9a8d4', '#fde68a'];
 const svgNS = 'http://www.w3.org/2000/svg';
 const make = (tag, cls, text) => {const node = document.createElement(tag); if(cls) node.className = cls; if(text !== undefined) node.textContent = text; return node;};
@@ -38,7 +38,7 @@ async function loadSession() {
   writeStorage(sessionKey(), id); renderTotals(result.total_counts);
 }
 function selectProvider(provider) {
-  if(state.busy) return;
+  if(state.busy || state.testing) return;
   state.provider = provider;
   document.querySelectorAll('.provider-tab').forEach(tab => {const active = tab.dataset.provider === provider; tab.classList.toggle('active', active); tab.setAttribute('aria-selected', active);});
   $('local-config').hidden = provider !== 'local'; $('roboflow-config').hidden = provider !== 'roboflow';
@@ -49,16 +49,56 @@ function selectProvider(provider) {
 }
 function updateButtons() {
   const pending = state.queue.filter(item => item.status === 'queued').length;
-  $('run-button').disabled = state.busy || !pending || !state.connected;
+  const locked = state.busy || state.testing;
+  $('run-button').disabled = locked || !pending || !state.connected || (state.provider === 'roboflow' && !state.cloudVerified);
   $('run-count').textContent = pending;
-  $('stop-button').hidden = !state.busy;
-  $('clear-queue').disabled = state.busy || !state.queue.length;
-  $('dropzone').disabled = state.busy;
-  $('file-input').disabled = state.busy;
-  ['threshold','persist-counts','session-id','load-session','new-session','roboflow-mode','api-key','workspace-name','workflow-id','model-id','output-path'].forEach(id => $(id).disabled = state.busy);
-  document.querySelectorAll('.provider-tab,.sample').forEach(button => button.disabled = state.busy);
-  $('queue-count').textContent = `${state.queue.length} / 20`;
+  $('run-label').textContent = state.batch ? 'Run batch' : 'Run detection';
+  $('stop-button').hidden = !state.busy || !state.batch;
+  $('clear-queue').disabled = locked || !state.queue.length;
+  $('dropzone').disabled = locked;
+  $('file-input').disabled = locked;
+  $('file-input').multiple = state.batch;
+  $('queue-panel').hidden = !state.batch;
+  $('upload-heading').textContent = state.batch ? 'Add images to your batch' : 'Choose an image';
+  $('dropzone-title').textContent = state.batch ? 'Drop images to add to queue' : 'Drop an image here';
+  $('sample-heading').textContent = state.batch ? 'Add a sample to queue' : 'Try a sample';
+  $('test-connection').disabled = locked || !state.connected;
+  $('test-connection').textContent = state.testing ? 'Testing…' : 'Test connection';
+  ['single-mode','batch-mode','threshold','persist-counts','session-id','load-session','new-session','roboflow-mode','api-key','workspace-name','workflow-id','model-id','output-path'].forEach(id => $(id).disabled = locked);
+  document.querySelectorAll('.provider-tab,.sample').forEach(button => button.disabled = locked);
+  document.querySelectorAll('.remove-image').forEach(button => button.disabled = locked);
+  $('queue-count').textContent = `${state.queue.length} / ${state.batch ? 20 : 1}`;
 }
+function keepOnly(item) {
+  state.queue.forEach(previous => {if(previous !== item && previous.preview.startsWith('blob:')) URL.revokeObjectURL(previous.preview);});
+  state.queue = item ? [item] : [];
+}
+function resetCloudStatus() {
+  state.cloudVerified = false;
+  $('cloud-status').textContent = '○ Not tested · test connection to enable detection';
+  $('cloud-status').classList.remove('connected');
+  updateButtons();
+}
+async function testRoboflowConnection() {
+  if(state.busy || state.testing) return;
+  notify('');
+  let fields;
+  try {fields = roboflowFields();} catch(error) {resetCloudStatus(); notify(error.message); return;}
+  state.testing = true; state.cloudVerified = false; updateButtons();
+  $('cloud-status').classList.remove('connected');
+  $('cloud-status').textContent = '○ Checking deployment access and detection output…';
+  try {
+    const form = new FormData(); Object.entries(fields).forEach(([key,value]) => form.set(key,value));
+    const result = await jsonFetch('/api/roboflow/test-connection',{method:'POST',body:form});
+    state.cloudVerified = true;
+    $('cloud-status').textContent = `● Connected · ${result.mode === 'model' ? 'Model' : 'Workflow'} verified · ${integer(result.latency_ms)} ms`;
+    $('cloud-status').classList.add('connected');
+  } catch(error) {
+    $('cloud-status').textContent = '○ Connection failed · check settings and retry';
+    notify(error.message);
+  } finally {state.testing = false; updateButtons();}
+}
+
 function renderQueue() {
   const container = $('queue'); container.replaceChildren();
   if(!state.queue.length) container.append(make('div','queue-empty','Your images will appear here. Each result is yours to inspect.'));
@@ -74,7 +114,7 @@ function renderQueue() {
   });
   const done = state.queue.filter(item => item.status === 'done');
   const failed = state.queue.filter(item => item.status === 'failed');
-  $('batch-metrics').hidden = !done.length && !failed.length;
+  $('batch-metrics').hidden = !state.batch || (!done.length && !failed.length);
   if(done.length || failed.length) {
     const counts = {}; done.forEach(item => Object.entries(item.result.counts).forEach(([label,number]) => counts[label] = (counts[label] || 0) + number));
     const total = done.reduce((sum,item) => sum + item.result.detection_count,0);
@@ -91,20 +131,23 @@ function removeImage(id) {
   if(state.selected === id) selectImage(state.queue[0] || null);
   renderQueue();
 }
-async function addFiles(files) {
-  if(state.busy) return;
+async function addFiles(files, selectionVersion = ++state.selectionVersion) {
+  if(state.busy || state.testing) return;
   const errors = [];
+  if(!state.batch && files.length > 1) {errors.push('Single-image mode accepts one image. Select Batch to add multiple images.'); files = files.slice(0,1);}
   for(const file of files) {
-    if(state.queue.length >= 20) {errors.push('Batch limit reached: up to 20 images. Clear the queue to start another batch.'); break;}
+    if(state.batch && state.queue.length >= 20) {errors.push('Batch limit reached: up to 20 images. Clear the queue to start another batch.'); break;}
     if(file.size > 10*1024*1024) {errors.push(`${file.name}: exceeds 10 MB.`); continue;}
     if(!['image/jpeg','image/png'].includes(file.type)) {errors.push(`${file.name}: use JPEG or PNG.`); continue;}
     const preview = URL.createObjectURL(file);
     try {
       const img = new Image(); img.src = preview; await img.decode();
       if(Math.min(img.naturalWidth,img.naturalHeight) < 32 || Math.max(img.naturalWidth,img.naturalHeight) > 8192 || img.naturalWidth*img.naturalHeight > 16000000) throw new Error('must be 32 px min, 8192 px max per side and 16 MP max.');
-      if(state.busy || state.queue.length >= 20) {URL.revokeObjectURL(preview); errors.push('Queue is full or already processing. Add this image to the next batch.'); continue;}
+      if(!state.batch && selectionVersion !== state.selectionVersion) {URL.revokeObjectURL(preview); continue;}
+      if(state.busy || state.testing || (state.batch && state.queue.length >= 20)) {URL.revokeObjectURL(preview); errors.push('Queue is full or already processing. Add this image to the next batch.'); continue;}
       const item = {id: crypto.randomUUID(), name:file.name, file, preview, status:'queued'};
-      state.queue.push(item); selectImage(item);
+      if(state.batch) state.queue.push(item); else keepOnly(item);
+      selectImage(item);
     } catch(error) {URL.revokeObjectURL(preview); errors.push(`${file.name}: ${error.message || 'could not open image.'}`);}
   }
   notify(errors.join('\n')); renderQueue();
@@ -188,7 +231,8 @@ function roboflowFields() {
   return values;
 }
 async function runDetection() {
-  if(state.busy) return;
+  if(state.busy || state.testing) return;
+  if(state.provider === 'roboflow' && !state.cloudVerified) {notify('Test the Roboflow connection before running detection.'); return;}
   notify('');
   let fields;
   try {fields = {session_id:validSession(),provider:state.provider,threshold:Number($('threshold').value)/100,counter:$('persist-counts').checked}; if(state.provider === 'roboflow') Object.assign(fields,roboflowFields());}
@@ -207,36 +251,46 @@ async function runDetection() {
         if(state.provider === 'roboflow') {$('cloud-status').textContent = '● Roboflow connected · last request succeeded'; $('cloud-status').classList.add('connected');}
       } catch(error) {
         item.status = 'failed'; item.error = error.message; notify(`${item.name}: ${error.message}`);
-        if(state.provider === 'roboflow') {$('cloud-status').textContent = '○ Last request failed'; $('cloud-status').classList.remove('connected');}
+        if(state.provider === 'roboflow') {state.cloudVerified = false; $('cloud-status').textContent = '○ Last request failed · test connection again'; $('cloud-status').classList.remove('connected');}
       }
       completed++; selectImage(item);
     }
   } finally {
     state.busy = false; renderQueue();
-    $('run-progress').textContent = `${state.stop ? 'Stopped' : 'Batch complete'} · ${completed} processed${state.queue.some(item => item.status === 'queued') ? ' · remaining images are ready' : ''}. Failed images can be removed and added again.`;
+    $('run-progress').textContent = state.batch ? `${state.stop ? 'Stopped' : 'Batch complete'} · ${completed} processed${state.queue.some(item => item.status === 'queued') ? ' · remaining images are ready' : ''}. Failed images can be removed and added again.` : (state.queue[0]?.status === 'failed' ? 'Detection failed. Select an image to try again.' : 'Detection complete · 1 image processed. Select another image for the next run.');
   }
 }
 async function checkConnection() {
   try {
-    const result = await jsonFetch('/api/status'); state.connected = true; state.serverKey = result.server_key_available;
+    const result = await jsonFetch('/api/status'); state.connected = true;
+    if(state.serverKey !== result.server_key_available) resetCloudStatus();
+    state.serverKey = result.server_key_available;
     $('local-model-name').textContent = result.local_model;
     $('api-status').classList.remove('offline'); $('api-status').replaceChildren(make('i'),document.createTextNode('API connected'));
     if(state.serverKey) {$('api-key').placeholder = 'Using server key · paste to override'; $('key-hint').textContent = 'A server key is configured. Leave blank to use it, or supply your own.';}
+    else {$('api-key').placeholder = 'Paste your Roboflow API key'; $('key-hint').textContent = 'Sent securely to Roboflow through this backend.';}
   } catch {
-    state.connected = false; $('api-status').classList.add('offline'); $('api-status').replaceChildren(make('i'),document.createTextNode('API offline'));
+    state.connected = false; resetCloudStatus(); $('api-status').classList.add('offline'); $('api-status').replaceChildren(make('i'),document.createTextNode('API offline'));
   }
   updateButtons();
 }
 async function init() {
   document.querySelectorAll('.provider-tab').forEach(button => button.onclick = () => selectProvider(button.dataset.provider));
   $('roboflow-mode').onchange = () => {$('workflow-fields').hidden = $('roboflow-mode').value !== 'workflow'; $('model-field').hidden = $('roboflow-mode').value !== 'model'; resetCloudStatus();};
-  function resetCloudStatus() {$('cloud-status').textContent = '○ Ready to connect · run an image to verify'; $('cloud-status').classList.remove('connected');}
   $('roboflow-mode').onchange();
   ['api-key','workspace-name','workflow-id','model-id','output-path'].forEach(id => $(id).addEventListener('input',resetCloudStatus));
+  $('test-connection').onclick = testRoboflowConnection;
+  const changeProcessingMode = () => {
+    state.selectionVersion++; state.batch = $('batch-mode').checked;
+    if(!state.batch) {const selected = state.queue.find(item => item.id === state.selected) || state.queue[0]; keepOnly(selected); selectImage(selected || null);}
+    renderQueue();
+  };
+  $('batch-mode').onchange = changeProcessingMode;
+  $('single-mode').onchange = changeProcessingMode;
   $('threshold').oninput = () => $('threshold-value').textContent = `${$('threshold').value}%`;
   $('dropzone').onclick = () => $('file-input').click();
   $('file-input').onchange = async () => {await addFiles(Array.from($('file-input').files)); $('file-input').value = '';};
-  ['dragenter','dragover'].forEach(type => $('dropzone').addEventListener(type,event => {event.preventDefault(); if(!state.busy) $('dropzone').classList.add('dragging');}));
+  ['dragenter','dragover'].forEach(type => $('dropzone').addEventListener(type,event => {event.preventDefault(); if(!state.busy && !state.testing) $('dropzone').classList.add('dragging');}));
   ['dragleave','drop'].forEach(type => $('dropzone').addEventListener(type,event => {event.preventDefault(); $('dropzone').classList.remove('dragging');}));
   $('dropzone').addEventListener('drop',event => addFiles(Array.from(event.dataTransfer.files)));
   // Avoid accidentally navigating away from results when a file misses the drop target.
@@ -254,7 +308,7 @@ async function init() {
     samples.forEach(sample => {
       const button = make('button','sample'); button.title = `Use sample: ${sample.name}`; button.setAttribute('aria-label',`Use sample ${sample.name}`);
       const image = make('img'); image.src = sample.url; image.alt = sample.name; image.loading = 'lazy'; button.append(image);
-      button.onclick = async () => {if(state.busy) return; button.disabled = true; try {const response = await fetch(sample.url); if(!response.ok) throw new Error('Sample unavailable.'); const blob = await response.blob(); await addFiles([new File([blob],sample.id,{type:blob.type})]);} catch(error) {notify(error.message);} finally {updateButtons();}};
+      button.onclick = async () => {if(state.busy || state.testing) return; const selectionVersion = ++state.selectionVersion; button.disabled = true; try {const response = await fetch(sample.url); if(!response.ok) throw new Error('Sample unavailable.'); const blob = await response.blob(); if(!state.batch && selectionVersion !== state.selectionVersion) return; await addFiles([new File([blob],sample.id,{type:blob.type})],selectionVersion);} catch(error) {notify(error.message);} finally {updateButtons();}};
       $('samples').append(button);
     }); updateButtons();
   } catch(error) {notify(error.message);}
