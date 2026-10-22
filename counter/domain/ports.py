@@ -4,6 +4,10 @@ from typing import BinaryIO, Dict, List
 from counter.domain.models import ObjectCount, Prediction
 
 
+class DetectionError(Exception):
+    """A detection adapter failure with a safe, user-facing message."""
+
+
 class ObjectDetector(ABC):
 
     @abstractmethod
@@ -50,6 +54,7 @@ class Monitor(ABC):
         result_image_path: str = None,
         counter: bool = None,
         persisted_counts: Dict[str, int] = None,
+        provider: str = None,
     ):
         raise NotImplementedError
 

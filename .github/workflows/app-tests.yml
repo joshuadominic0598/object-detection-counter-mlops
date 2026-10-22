@@ -57,3 +57,25 @@ jobs:
         run: |
           cp .env.example .env
           docker compose --profile "${DATABASE_BACKEND}" config --quiet
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install frontend test dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run desktop and mobile browser tests
+        run: make test_frontend
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-browser-report
+          path: playwright-report/
+          retention-days: 7

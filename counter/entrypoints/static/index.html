@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark"><title>Counter — Vision workspace</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%238b5cf6'/%3E%3Cpath d='M12 18v-6h6m4 0h6v6m0 4v6h-6m-4 0h-6v-6' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="topbar"><a href="/" class="brand" aria-label="Counter home"><span class="brand-mark">⌗</span><span>counter<span class="brand-dot">.</span></span><span class="brand-divider"></span><small>VISION WORKSPACE</small></a><nav><a href="/dashboards/monitoring_dashboard.html" target="_blank" rel="noopener">↗ <span>Monitoring</span></a><a href="/dashboards/session_dashboard.html" target="_blank" rel="noopener">◷ <span>Sessions</span></a><span id="api-status" class="connection" role="status"><i></i> Connecting</span></nav></header>
+<main>
+  <section class="intro"><div><div class="eyebrow"><span></span> OBJECT DETECTION & COUNTING</div><h1>Make every object <em>count.</em></h1><p>Your images. Your model. A clearer picture.</p></div><a class="text-link" href="/docs" target="_blank" rel="noopener">Explore the API <span>↗</span></a></section>
+  <div class="provider-bar"><div class="provider-tabs" role="tablist" aria-label="Detection provider"><button id="local-tab" class="provider-tab active" role="tab" aria-selected="true" aria-controls="local-config" data-provider="local"><span>▣</span> Local model <small>ON DEVICE</small></button><button id="roboflow-tab" class="provider-tab" role="tab" aria-selected="false" aria-controls="roboflow-config" data-provider="roboflow"><span>☁</span> Roboflow API <small>CLOUD</small></button></div><span id="provider-hint" class="provider-hint">Private inference, running on your machine</span></div>
+  <div id="notice" class="notice" role="alert" hidden></div>
+  <div class="workspace">
+    <aside class="controls">
+      <section class="panel config-panel"><div class="section-label"><span class="step">01</span><h2>Choose your model</h2></div>
+        <div id="local-config" role="tabpanel" aria-labelledby="local-tab"><div class="model-card"><span class="model-icon">▧</span><div><strong id="local-model-name">Local detector</strong><small>Active registry model · CPU inference</small></div><i class="green-dot"></i></div><p class="muted small">Detects the classes your active model was trained on. Model training and promotion stay in your existing pipeline.</p></div>
+        <div id="roboflow-config" role="tabpanel" aria-labelledby="roboflow-tab" hidden>
+          <label>Deployment type<select id="roboflow-mode"><option value="model" selected>Hosted detection model</option><option value="workflow">Workflow</option></select></label>
+          <label>API key <span class="optional">kept in memory only</span><input type="password" id="api-key" placeholder="Paste your Roboflow API key" autocomplete="off" spellcheck="false" maxlength="256"></label><p id="key-hint" class="muted small">Sent securely to Roboflow through this backend.</p>
+          <div id="workflow-fields" hidden><label>Workspace slug<input id="workspace-name" value="model-version2" maxlength="100" spellcheck="false"></label><label>Workflow slug<input id="workflow-id" value="parking-detection-v3-logic" maxlength="100" spellcheck="false"></label><label>Prediction output <span class="optional">field path</span><input id="output-path" value="predictions" maxlength="200" spellcheck="false"></label></div>
+          <label id="model-field">Model ID<input id="model-id" value="parking-detection-ewm7h/3" placeholder="project-slug/3" maxlength="110" spellcheck="false"></label>
+          <button id="test-connection" class="secondary connection-button" type="button">Test connection</button><p class="connection-hint">Checks this deployment with a bundled sample. May use Roboflow credits; session counts stay unchanged.</p><div id="cloud-status" class="cloud-status" role="status" aria-live="polite">○ Not tested · test connection to enable detection</div><p class="cloud-note">Images are sent to Roboflow. A deployment detects only its trained classes. Workflows must expose raw detection boxes; an image-only or classification output cannot be counted.</p>
+        </div>
+        <div class="threshold-head"><label for="threshold">Confidence threshold</label><output id="threshold-value" for="threshold">50%</output></div><input id="threshold" type="range" min="1" max="99" value="50"><div class="range-labels"><span>More detections</span><span>Higher certainty</span></div>
+      </section>
+      <section class="panel upload-panel"><div class="section-label"><span class="step">02</span><h2 id="upload-heading">Choose an image</h2><span id="queue-count" class="tiny-badge">0 / 1</span></div><div class="processing-mode"><label class="switch-label"><input id="batch-mode" type="checkbox"><span>Batch processing</span></label><p id="mode-hint">Choose one image. Selecting another replaces it.</p></div><button id="dropzone" class="dropzone" type="button"><span class="upload-icon">↑</span><strong id="dropzone-title">Drop an image here</strong><span>or <b>browse files</b></span><small>JPG, PNG · 10 MB per image<br>32 px min · 8192 px max · 16 MP max</small></button><input id="file-input" type="file" accept="image/jpeg,image/png" hidden>
+        <div class="sample-heading"><span id="sample-heading">Try a sample</span><span>↙ no upload needed</span></div><div id="samples" class="samples" aria-label="Sample images"></div>
+        <div class="run-options"><label class="switch-label"><input id="persist-counts" type="checkbox" checked><span>Accumulate counts</span></label><small>Add each successful image to this session.</small></div><button id="run-button" class="primary" disabled><span>▶</span> <span id="run-label">Run detection</span> <kbd id="run-count">0</kbd></button><button id="stop-button" class="secondary" hidden>Stop after current image</button><div id="run-progress" class="run-progress" role="status" aria-live="polite">Add an image to get started</div>
+      </section>
+    </aside>
+    <div class="results-column">
+      <section class="panel viewer-panel"><div class="viewer-toolbar"><div><span class="live-square"></span><h2>Detection canvas</h2><span id="canvas-badge" class="tiny-badge">PREVIEW</span></div><a id="download-result" class="text-link" download hidden>Download result ↓</a></div>
+        <div id="canvas-empty" class="canvas-empty"><div class="scan-art"><span></span><i>✧</i></div><h3>A new perspective starts here.</h3><p>Choose a sample or upload an image.<br>Run detection to bring the details into focus.</p><span class="empty-badge">LOCAL + CLOUD · ONE WORKSPACE</span></div>
+        <div id="image-stage" class="image-stage" hidden><div id="image-wrap" class="image-wrap"><img id="result-image" alt="Selected image"><svg id="boxes" xmlns="http://www.w3.org/2000/svg" aria-label="Interactive object detections"></svg></div></div>
+        <div class="canvas-footer"><span id="image-caption">Your next detection is one image away</span><span><i class="purple-dot"></i> Hover or tap a box to inspect</span></div>
+        <div id="metrics" class="metrics"><div><span>Objects detected</span><strong id="metric-objects">—</strong></div><div><span>Classes found</span><strong id="metric-classes">—</strong></div><div><span>Request latency</span><strong id="metric-latency">—</strong></div><div><span>Mean confidence</span><strong id="metric-confidence">—</strong></div></div>
+        <div id="image-counts" class="image-counts"><span class="muted small">Per-image class counts appear after detection.</span></div><div id="detection-list" class="detection-list" aria-label="Detected objects"></div>
+      </section>
+      <section id="queue-panel" class="panel queue-panel" hidden><div class="section-label"><span class="step">03</span><h2>Image queue</h2><span id="batch-summary" class="muted small">Single image or a batch of up to 20</span><button id="clear-queue" class="subtle" disabled>Clear</button></div><div id="queue" class="queue"><div class="queue-empty">Your images will appear here. Each result is yours to inspect.</div></div><div id="batch-metrics" class="batch-metrics" hidden></div></section>
+      <section class="panel counter-panel"><div class="counter-heading"><div><div class="eyebrow">THE BIGGER PICTURE</div><h2>Session counter<span class="tiny-badge">PERSISTENT</span></h2></div><div class="session-controls"><label for="session-id">SESSION ID</label><div><input id="session-id" maxlength="80" spellcheck="false" aria-label="Session ID"><button id="load-session" class="subtle">Load</button><button id="new-session" class="subtle" title="Start a new session without deleting previous counts">＋ New</button></div></div></div><div class="counter-content"><div class="counter-total"><strong id="persistent-total">0</strong><span>objects counted</span></div><div id="persistent-classes" class="persistent-classes"><span class="muted small">Run your first image to start counting.</span></div></div><p class="counter-footnote">Cumulative detections across successful submissions, including batches. Repeated images add again; this does not track unique objects across images. Counts survive reloads and app restarts.</p></section>
+    </div>
+  </div>
+  <footer><span><span class="brand-dot">●</span> Built for a closer look.</span><span>LOCAL INFERENCE · ROBOFLOW WORKFLOWS · PERSISTENT COUNTS</span></footer>
+</main>
+</body>
+</html>

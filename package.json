@@ -1,0 +1,11 @@
+{
+  "name": "object-counter-frontend-tests",
+  "private": true,
+  "packageManager": "pnpm@11.25.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test:frontend": "playwright test",
+    "test:frontend:report": "playwright show-report"
+  },
+  "devDependencies": { "@playwright/test": "1.62.1" }
+}

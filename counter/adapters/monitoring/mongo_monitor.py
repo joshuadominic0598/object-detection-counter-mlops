@@ -29,6 +29,7 @@ class MongoMonitor(Monitor):
         result_image_path: str = None,
         counter: bool = None,
         persisted_counts: dict = None,
+        provider: str = None,
     ):
 
         document = {
@@ -48,6 +49,7 @@ class MongoMonitor(Monitor):
             "result_image_path": result_image_path,
             "counter": counter,
             "persisted_counts": persisted_counts,
+            **({"provider": provider} if provider else {}),
         }
 
         self.__detection_history_col.insert_one(document)
