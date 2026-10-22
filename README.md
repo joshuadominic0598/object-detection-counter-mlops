@@ -12,7 +12,28 @@
 [![Pytest](https://img.shields.io/badge/Tests-Pytest-0A9EDC.svg?logo=pytest&logoColor=white)](https://pytest.org/)
 [![Architecture](https://img.shields.io/badge/Architecture-Hexagonal-6E56CF.svg)](#architecture)
 
-[🏗️ Architecture](#-architecture) • [🚀 Quick Start](#-quick-start) • [🧩 Make It Yours](#-make-it-yours) • [📁 Project Structure](#-project-structure) • [📡 API](#-api) • [🤖 Model Training, Registry and Performance](#-model-training-registry-and-performance) • [🩺 Monitoring](#-monitoring) • [🧪 App Tests](#-app-tests)
+[🖥️ The App](#-the-app) • [🏗️ Architecture](#-architecture) • [🚀 Quick Start](#-quick-start) • [🧩 Make It Yours](#-make-it-yours) • [📁 Project Structure](#-project-structure) • [📡 API](#-api) • [🤖 Model Training, Registry and Performance](#-model-training-registry-and-performance) • [🩺 Monitoring](#-monitoring) • [🧪 App Tests](#-app-tests)
+
+---
+
+## 🖥️ The App
+
+**Choose a model, drop in an image, and inspect what it finds.** The browser workspace brings inference, visual inspection, counting, and monitoring together, so trying the app starts with `make start` and a browser.
+
+[![Counter front page with a completed local parking detection](resources/readme/app-workspace.png)](resources/readme/app-workspace.png)
+
+*Actual app screenshot: the local parking model finds 8 objects in an included sample. Results depend on the chosen model, image, and threshold.*
+
+| Feature | What you can do |
+|---|---|
+| **Local or cloud inference** | Use the active local YOLO model, or bring a Roboflow API key and hosted model/workflow. Test the cloud connection before running. Each model recognizes its trained classes. |
+| **Single image or Batch** | Replace one selected image by default, or choose Batch to build a queue of up to 20 images. Try the included samples or upload JPEG/PNG files with enforced size and dimension limits. |
+| **Interactive detections** | Hover, focus, or tap a bounding box to highlight the object, dim its surroundings, and see its class and confidence. Download the annotated image. |
+| **Results at a glance** | See object totals, class counts, request latency, and mean confidence for each image, plus combined batch results and failures. |
+| **Persistent session counts** | Accumulate detections across images and batches, return to a saved session, or start a new one. Counts survive app restarts with either SQLite or MongoDB. |
+| **Monitoring and investigation** | Open service-health charts and session histories from the top bar. Inspect volume, response time, errors, latency percentiles, and annotated requests for both providers. Time buckets adapt to the selected history. |
+
+Counts add detections across submissions; repeated images count again. Confidence is a model score, not measured accuracy. The training, evaluation, and promotion pipeline remains separate from this inference workspace.
 
 ---
 
@@ -99,7 +120,7 @@ Both modes persist data in separate Docker volumes. SQLite runs inside the API c
 Open [http://localhost:5000](http://localhost:5000). No frontend build or Node installation is needed; FastAPI serves the static app and API on the same origin.
 
 1. Choose **Local model** or **Roboflow API** at the top. Local uses the active registry model. Roboflow offers **Workflow** and **Hosted detection model** modes.
-2. Choose an included sample or upload up to **20 images**. Set the confidence threshold and whether to accumulate counts, then run the queue. Images run sequentially; failures are shown per image, successful results remain available, and Stop finishes the current image before pausing the queue.
+2. By default, choose **one image** from the samples or upload picker; choosing another replaces the current selection. Choose **Batch** beside **Single image** in the sidebar to add selections to an explicit queue of up to **20 images** and use the multi-file picker. Switching back to Single image keeps only the currently selected image. Set the threshold and whether to accumulate counts, then press **Run detection** or **Run batch**. Batches run sequentially; failures are shown per image and Stop finishes the current image before pausing the queue.
 3. Select a result and hover, focus, or tap a bounding box (or its object chip) to highlight it, dim the surrounding image, and inspect its class/confidence. Download the annotated result from the canvas.
 4. Review object/class counts, mean confidence, request latency (including provider round-trip, rendering and storage), and the batch summary. Confidence is the provider's score, not measured model accuracy; a zero-result image has no mean confidence.
 5. Session counters are saved in the selected database. Local and cloud start with separate session IDs, remembered in this browser. Enter an existing ID and **Load** to resume, or **New** to start fresh without deleting history. New deployments should use new sessions if their class meanings differ.
@@ -117,7 +138,7 @@ Workflow requests go to `https://serverless.roboflow.com/{workspace}/workflows/{
 
 For a single hosted detection model, select **Hosted detection model** and enter `project-slug/version`. The backend sends the image to `https://detect.roboflow.com/{model_id}`. Only fixed Roboflow HTTPS origins are allowed; arbitrary URLs or self-hosted inference endpoints are not accepted. These modes support object detections, not classification-only, image-only, or arbitrary workflow outputs. Each model detects **only the classes it was trained to recognize**. The local threshold filters returned predictions; it cannot recover detections discarded by a workflow's own internal filters.
 
-Cloud mode sends the validated image to Roboflow and uses your account's deployment permissions, quotas and billing. Local mode keeps inference on your machine. The status badge reports this app's API health; Roboflow is marked connected only after successful inference. Credentials/configuration edits clear that cloud connection indication.
+In cloud mode, press **Test connection** before running detection. This verifies the selected key and deployment/output using one bundled sample inference, which may consume Roboflow credits. It does not change session totals, save result images, or add detection-history records. Run controls stay disabled until verification succeeds. Editing the key, deployment type, identifiers or workflow output requires testing again; changing the confidence threshold does not. Verification stays only in page memory and resets on reload. The top API badge reports this app's health separately. Cloud images use your account's permissions, quotas and billing; local inference runs on your machine.
 
 ### Upload and local deployment boundaries
 
@@ -328,6 +349,8 @@ curl -F "session_id=cloud-demo" -F "provider=roboflow" -F "counter=true" \
      -F "file=@resources/images/carlot.jpeg" http://localhost:5000/api/detect
 ```
 
+`POST /api/roboflow/test-connection` accepts the same Roboflow configuration fields (no uploaded file or session required), verifies a bundled sample, and returns `status`, `mode`, `deployment`, and `latency_ms`. This convenience endpoint does not gate scripted `/api/detect` calls; the connection-first flow is enforced by the frontend.
+
 `GET /api/sessions/{session_id}` reads persisted class totals. `GET /api/samples` lists the curated gallery. `/api/results/{session_id}/{filename}` serves generated JPEGs only. Batches are a sequence of per-image `/api/detect` requests, so each image receives its own result and monitoring record. Already-completed images are not automatically resubmitted by the browser. The CLI exits nonzero if any batch item fails.
 
 ### `POST /object-detection`
@@ -485,6 +508,8 @@ make dashboard session      # step-by-step trace of one session, with annotated 
 
 The generated monitoring dashboards live under `tmp/dashboard/` when you run the commands above.
 
+From the browser, choose **Last hour**, **Last 24 hours**, **Last 7 days**, or **All history**. The KPIs and charts use the same selected range. Time buckets, chart height, bar width, and labels adapt to the recorded span, so a single request or a short batch is visible without a week of empty daily bars. For example, 20 calls spread across an hour use five-minute buckets. Empty intervals show zero volume and leave latency/error measurements blank; missing measurements are not treated as zero. Refresh the report after new detections. The default is All history; the command above also generates the complete history.
+
 <table>
 <tr>
 <td><img src="resources/readme/monitoring.png" width="400"><br><sub>Monitoring dashboard</sub></td>
@@ -521,7 +546,7 @@ pnpm exec playwright install chromium
 make test_frontend
 ```
 
-Playwright runs the same behavioral checks at **1440×900 desktop** and **390×844 phone** sizes. It covers provider defaults, hosted-model/workflow form switching, request fields, file validation and queue limits, sequential batches, partial failures, stop/resume without duplicate submissions, box hover/tap/keyboard focus, downloads, session persistence, credential storage, safe label rendering, responsive layout and offline behavior.
+Playwright runs the same behavioral checks at **1440×900 desktop** and **390×844 phone** sizes. It covers single-image replacement, explicit batch mode, connection testing and invalidation, provider defaults, hosted-model/workflow form switching, request fields, file validation and queue limits, sequential batches, partial failures, stop/resume without duplicate submissions, box hover/tap/keyboard focus, downloads, session persistence, credential storage, safe label rendering, responsive layout and offline behavior.
 
 These tests start an isolated static server at `127.0.0.1:5197` and simulate API responses. They do not call Roboflow, load model weights, use application databases, or spend inference credits. Existing Python tests cover the real FastAPI, detection and storage contracts; live inference validation is recorded separately in [the validation notes](docs/frontend-feature-validation.md).
 
